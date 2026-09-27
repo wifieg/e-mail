@@ -1,3 +1,6 @@
+# Email Manager — تشغيل جاهز
+# التشغيل:  docker compose up -d --build
+# افتح المتصفح على:  http://localhost:8000   (المدير الافتراضي: admin / admin)
 services:
   email-manager:
     build: .
@@ -6,13 +9,12 @@ services:
     restart: unless-stopped
     ports:
       - "8000:8000"     # واجهة الويب
-      - "8025:8025"     # SMTP الداخلي (للإرسال — وحتى Outlook خارجي)
-      - "8143:8143"     # IMAP الداخلي (للقراءة — وحتى Outlook خارجي)
+      - "8025:8025"     # SMTP الداخلي المدمج
+      - "8143:8143"     # IMAP الداخلي المدمج
     volumes:
-      # مزامنة الكود: تعدّل app.py على جهازك ثم "docker compose restart" يطبّقها فوراً
-      - ./app.py:/app/app.py
-      # مزامنة البيانات: نفس مجلد data على جهازك = نفس قاعدة بيانات الـ.exe
-      - ./data:/app/data
+      # قاعدة البيانات + المفاتيح على Docker volume (نظام ملفات أصلي — موثوق وسريع).
+      # البيانات تبقى محفوظة بين عمليات التشغيل ولا تُمسح عند تحديث الصورة.
+      - emaildata:/app/data
     environment:
       EM_HOST: "0.0.0.0"
       EM_PORT: "8000"
@@ -20,4 +22,7 @@ services:
       EM_DB: "/app/data/email_manager.db"
       EM_INT_SMTP_PORT: "8025"
       EM_INT_IMAP_PORT: "8143"
-      EM_RELOAD: "1"      # إعادة تحميل تلقائي عند تعديل app.py — بدون إيقاف يدوي
+      EM_WAL: "1"       # WAL — أداء وتزامن أفضل على نظام الملفات الأصلي
+
+volumes:
+  emaildata:

@@ -179,12 +179,32 @@ def verify_password(pw: str, stored: str) -> bool:
 
 # ------------------------------------------------------------------ قاعدة البيانات
 def get_connection():
-    conn = sqlite3.connect(DB_NAME, timeout=30)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA foreign_keys = ON")
-    conn.execute("PRAGMA busy_timeout = 30000")
-    conn.execute("PRAGMA journal_mode = WAL")
-    return conn
+    # لا نضبط journal_mode هنا — يُضبط مرة واحدة في init_db.
+    # ضبطه في كل اتصال كان يسبّب "disk I/O error" عبر مشاركة ملفات Docker تحت الضغط.
+    last = None
+    for attempt in range(5):
+        try:
+            conn = sqlite3.connect(DB_NAME, timeout=30)
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA foreign_keys = ON")
+            conn.execute("PRAGMA busy_timeout = 30000")
+            return conn
+        except sqlite3.OperationalError as exc:  # اتصال متعثّر عبر المشاركة — أعِد المحاولة
+            last = exc
+            time.sleep(0.25 * (attempt + 1))
+    raise last
+
+
+def _init_journal_mode():
+    """يضبط وضع دفتر اليومية مرة واحدة: DELETE (آمن عبر أي نظام ملفات).
+    EM_WAL=1 يفعّل WAL (للتشغيل المحلي/الـexe على قرص محلي)."""
+    try:
+        conn = sqlite3.connect(DB_NAME, timeout=30)
+        conn.execute("PRAGMA journal_mode = %s"
+                     % ("WAL" if os.environ.get("EM_WAL") == "1" else "DELETE"))
+        conn.close()
+    except sqlite3.OperationalError as exc:  # noqa: BLE001
+        log.warning("تعذّر ضبط journal_mode: %s", exc)
 
 
 def _table_columns(cur, table):
@@ -193,6 +213,7 @@ def _table_columns(cur, table):
 
 
 def init_db():
+    _init_journal_mode()
     conn = get_connection()
     cur = conn.cursor()
 
@@ -496,6 +517,12 @@ def init_db():
     for col, ddl in [("campaign_id", "INTEGER"), ("to_email", "TEXT"), ("error", "TEXT")]:
         if col not in sent_cols:
             cur.execute(f"ALTER TABLE sent_emails ADD COLUMN {col} {ddl}")
+
+    # تاريخ/وقت مخصّص لكل حملة (إرسال بتاريخ قديم مثلاً)
+    camp_cols = _table_columns(cur, "campaigns")
+    for col in ("send_date", "send_time"):
+        if col not in camp_cols:
+            cur.execute(f"ALTER TABLE campaigns ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
 
     # الرسائل صارت تُقرأ حيّاً من السيرفر — لم يعد هناك تخزين محلي لها
     cur.execute("DROP INDEX IF EXISTS idx_inbox_msgid")
@@ -1931,15 +1958,18 @@ def _process_batch_inner(limit):
     batch_size = limit or (s["batch_size"] if s else 10)
     cfg = _batch_config(cur)
     sig_tpl = get_setting("signature_template", "")
-    # تاريخ/وقت إرسال مخصّص للحملة (من إعدادات الجدولة) — اختياري
-    campaign_date = None
-    _cd = (get_setting("campaign_send_date", "") or "").strip()
-    if _cd:
-        _ct = (get_setting("campaign_send_time", "") or "12:00").strip() or "12:00"
+    # تاريخ/وقت إرسال عام (من إعدادات الجدولة) — يُستخدم كاحتياطي لو الحملة ملهاش تاريخ خاص
+    def _parse_date(d, t):
+        d = (d or "").strip()
+        if not d:
+            return None
+        t = (t or "12:00").strip() or "12:00"
         try:
-            campaign_date = datetime.fromisoformat(_cd + "T" + _ct)
+            return datetime.fromisoformat(d + "T" + t)
         except ValueError:
-            campaign_date = None
+            return None
+    global_campaign_date = _parse_date(get_setting("campaign_send_date", ""),
+                                       get_setting("campaign_send_time", ""))
 
     accounts = cur.execute("SELECT * FROM accounts WHERE active = 1 ORDER BY id").fetchall()
     if not accounts:
@@ -1950,7 +1980,8 @@ def _process_batch_inner(limit):
     rows = cur.execute(f"""
         SELECT r.id AS rid, r.campaign_id, r.employee_id, e.owner_account_id,
                e.name, e.email, e.title, e.department, e.phone, e.signature,
-               t.subject, t.body, t.signature AS tpl_signature
+               t.subject, t.body, t.signature AS tpl_signature,
+               c.send_date AS c_send_date, c.send_time AS c_send_time
         FROM campaign_recipients r
         JOIN campaigns c ON c.id = r.campaign_id
         JOIN employees e ON e.id = r.employee_id
@@ -1997,6 +2028,9 @@ def _process_batch_inner(limit):
             account = random.choice(available) if cfg["randomize"] else available[rr % len(available)]
             rr += 1
 
+        # تاريخ الحملة: الخاص بها إن وُجد، وإلا العام من الجدولة
+        campaign_date = (_parse_date(row["c_send_date"], row["c_send_time"])
+                         or global_campaign_date)
         emp = {"name": row["name"], "email": row["email"], "title": row["title"],
                "department": row["department"], "phone": row["phone"],
                "signature": row["signature"]}
@@ -2299,6 +2333,12 @@ def flush_reverse_queue(limit=None):
                 subject = "Re: " + subject
 
             in_reply_to = row["msgid"] if (row["msgid"] or "").startswith("<") else None
+            # تاريخ الرد = موعد استحقاقه (تاريخ الرسالة الأصلية + التأخير) عشان
+            # الرد يوصل بنفس تاريخ الحملة لو كانت بتاريخ قديم
+            try:
+                reply_date = datetime.fromisoformat(row["due_at"]) if row["due_at"] else None
+            except (TypeError, ValueError):
+                reply_date = None
             is_internal = _email_domain_internal(conn, row["emp_email"])
             if is_internal:
                 # رد داخلي: يتسلّم في صندوق الحساب الرئيسي داخل البرنامج
@@ -2308,7 +2348,8 @@ def flush_reverse_queue(limit=None):
                              'alt="logo">' % sig_logo)
                 ok, res = internal_deliver(row["emp_email"], row["name"] or "",
                                            row["account_email"], subject,
-                                           html, in_reply_to=in_reply_to, conn=conn)
+                                           html, in_reply_to=in_reply_to, conn=conn,
+                                           date_override=reply_date)
                 err = None if ok else res
                 if ok and row["uid"]:
                     conn.execute("UPDATE mail_messages SET is_replied=1 WHERE id=?", (row["uid"],))
@@ -3407,6 +3448,11 @@ CAMPAIGNS_TPL = """
    <div class="form-text">اختر حساباً ليشمل مستلمو الحملة مجموعته فقط
     (التوزيع من صفحة «توزيع الموظفين»).</div>
   </div>
+  <div class="col-md-3 mb-2"><label><i class="bi bi-calendar-event"></i> تاريخ الحملة (اختياري)</label>
+   <input name="send_date" type="date" class="form-control">
+   <div class="form-text">سيبه فاضي = تاريخ اليوم. حطّ تاريخ قديم عشان توصل الرسايل والردود بنفس التاريخ.</div></div>
+  <div class="col-md-3 mb-2"><label><i class="bi bi-clock"></i> الساعة</label>
+   <input name="send_time" type="time" class="form-control" value="12:00"></div>
  </div>
  {% if departments %}
  <div class="mt-2">
@@ -6808,6 +6854,8 @@ def add_campaign():
     template_id = int(f["template_id"])
     flt = f.get("filter", "").strip().lower()
     scope_acc = (f.get("scope_account") or "").strip()
+    send_date = (f.get("send_date", "") or "").strip()
+    send_time = (f.get("send_time", "") or "").strip()
 
     conn = get_connection()
     cur = conn.cursor()
@@ -6817,7 +6865,8 @@ def add_campaign():
         flash("القالب غير موجود", "error")
         return redirect(url_for("campaigns"))
 
-    cur.execute("INSERT INTO campaigns (name, template_id) VALUES (?, ?)", (name, template_id))
+    cur.execute("INSERT INTO campaigns (name, template_id, send_date, send_time) VALUES (?, ?, ?, ?)",
+                (name, template_id, send_date, send_time))
     cid = cur.lastrowid
 
     # قوالب الأقسام
