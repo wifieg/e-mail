@@ -93,7 +93,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.1"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.0.2"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -2443,6 +2443,18 @@ def _safe_call(fn, *args):
 _stop_event = threading.Event()
 
 
+def _scheduled_send_dt():
+    """وقت بدء الإرسال المجدول من إعدادات الجدولة (تاريخ + وقت)، أو None لو غير محدّد."""
+    d = (get_setting("campaign_send_date", "") or "").strip()
+    if not d:
+        return None
+    t = (get_setting("campaign_send_time", "") or "12:00").strip() or "12:00"
+    try:
+        return datetime.fromisoformat(d + "T" + t)
+    except ValueError:
+        return None
+
+
 def scheduler_loop():
     log.info("بدأ المُجدوِل (فحص كل %ds)", SCHEDULER_TICK)
     while not _stop_event.is_set():
@@ -2450,7 +2462,10 @@ def scheduler_loop():
             conn = get_connection()
             s = conn.execute("SELECT * FROM schedule_settings WHERE id = 1").fetchone()
             conn.close()
-            if s and s["enabled"]:
+            # بوابة وقت الإرسال المجدول: لو الموعد في المستقبل استنّى، ولو قديم/حان أرسِل.
+            sched = _scheduled_send_dt()
+            time_ok = (sched is None) or (datetime.now() >= sched)
+            if s and s["enabled"] and time_ok:
                 interval = max(1, int(s["interval_minutes"]))
                 due = True
                 if s["last_run"]:
@@ -3581,56 +3596,125 @@ CAMPAIGN_DETAIL_TPL = """
 
 SCHEDULE_TPL = """
 {% extends "base.html" %}{% block content %}
-<h2>الجدولة والحماية من البلوك</h2>
-<form method="POST" class="card card-body mb-3" style="max-width:640px">
- <h5>الدفعات</h5>
- <div class="row">
-  <div class="col-6 mb-2"><label>عدد الرسائل في كل دفعة</label>
-   <input name="batch_size" type="number" min="1" class="form-control" value="{{ s.batch_size }}" required></div>
-  <div class="col-6 mb-2"><label>الفترة بين الدفعات (دقائق)</label>
-   <input name="interval_minutes" type="number" min="1" class="form-control" value="{{ s.interval_minutes }}" required></div>
+<style>
+ .sc-wrap{max-width:760px;margin:0 auto}
+ .sc-head{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+ .sc-head i{font-size:1.4rem;color:#0f6cbd}
+ .sc-head h2{font-size:1.35rem;margin:0;font-weight:700;color:#1f2937}
+ .sc-card{background:#fff;border:1px solid #e2e6ee;border-radius:12px;margin-bottom:16px;
+   box-shadow:0 1px 4px rgba(20,40,80,.05);overflow:hidden}
+ .sc-card-h{display:flex;align-items:center;gap:8px;padding:11px 16px;background:#f7f9fc;
+   border-bottom:1px solid #e8ebf2;font-weight:700;font-size:.98rem;color:#243043}
+ .sc-card-h i{color:#0f6cbd}
+ .sc-card-b{padding:16px}
+ .sc-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+ @media(max-width:576px){.sc-grid{grid-template-columns:1fr}}
+ .sc-fld label{display:block;font-size:.85rem;font-weight:600;color:#243043;margin-bottom:5px}
+ .sc-ig{display:flex;align-items:stretch;border:1px solid #d5dae4;border-radius:8px;overflow:hidden;background:#fcfdff}
+ .sc-ig input{border:none;outline:none;padding:9px 11px;font-size:.9rem;width:100%;background:transparent}
+ .sc-ig input:focus{box-shadow:none}
+ .sc-ig .unit{display:flex;align-items:center;padding:0 12px;background:#eef2f9;color:#0f6cbd;
+   font-size:.8rem;font-weight:700;white-space:nowrap;border-inline-start:1px solid #d5dae4}
+ .sc-ig:focus-within{border-color:#0f6cbd;box-shadow:0 0 0 3px rgba(15,108,189,.12)}
+ .sc-hint{font-size:.75rem;color:#8a94a6;margin-top:4px}
+ .sc-check{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border:1px solid #e6e9f0;
+   border-radius:8px;margin-top:10px;background:#fbfcfe;cursor:pointer}
+ .sc-check input{width:18px;height:18px;accent-color:#0f6cbd;margin-top:1px}
+ .sc-check .t{font-size:.88rem;color:#243043;font-weight:600}
+ .sc-check .d{font-size:.75rem;color:#8a94a6;margin-top:2px}
+ .sc-btn{background:#0f6cbd;border:none;color:#fff;padding:10px 20px;border-radius:8px;
+   font-size:.92rem;font-weight:600;cursor:pointer}
+ .sc-btn:hover{background:#115ea3}
+ .sc-btn-2{background:#fff;border:1px solid #e0a336;color:#b3730a;padding:9px 18px;border-radius:8px;
+   font-size:.9rem;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+ .sc-btn-2:hover{background:#fff7ea}
+ .sc-note{background:#eff6fc;border:1px solid #b3d3f0;border-radius:10px;padding:12px 14px;
+   font-size:.82rem;color:#2c4a63;line-height:1.8}
+</style>
+<div class="sc-wrap">
+ <div class="sc-head"><i class="bi bi-shield-fill-check"></i><h2>الجدولة والحماية من البلوك</h2></div>
+ <form method="POST">
+
+  <div class="sc-card">
+   <div class="sc-card-h"><i class="bi bi-stack"></i> الدفعات</div>
+   <div class="sc-card-b">
+    <div class="sc-grid">
+     <div class="sc-fld"><label>عدد الرسائل في كل دفعة</label>
+      <div class="sc-ig"><input name="batch_size" type="number" min="1" value="{{ s.batch_size }}" required>
+       <span class="unit">رسالة</span></div></div>
+     <div class="sc-fld"><label>الفترة بين كل دفعة والتانية</label>
+      <div class="sc-ig"><input name="interval_minutes" type="number" min="1" value="{{ s.interval_minutes }}" required>
+       <span class="unit">دقيقة</span></div>
+      <div class="sc-hint">مثلاً 5 = كل 5 دقائق تتبعت دفعة جديدة</div></div>
+    </div>
+    <label class="sc-check">
+     <input type="checkbox" name="enabled" {{ 'checked' if s.enabled }}>
+     <span><span class="t">تفعيل الإرسال المجدول التلقائي</span>
+      <span class="d">لما يتفعّل، البرنامج يبعت الحملات على دفعات لوحده حسب الإعدادات دي.</span></span></label>
+   </div>
+  </div>
+
+  <div class="sc-card">
+   <div class="sc-card-h"><i class="bi bi-shield-lock"></i> الحماية من البلوك</div>
+   <div class="sc-card-b">
+    <div class="sc-grid">
+     <div class="sc-fld"><label>أقل تأخير بين رسالتين</label>
+      <div class="sc-ig"><input name="send_min_delay" type="number" min="0" value="{{ cfg.send_min_delay }}">
+       <span class="unit">ثانية</span></div></div>
+     <div class="sc-fld"><label>أكبر تأخير بين رسالتين</label>
+      <div class="sc-ig"><input name="send_max_delay" type="number" min="0" value="{{ cfg.send_max_delay }}">
+       <span class="unit">ثانية</span></div>
+      <div class="sc-hint">البرنامج يستنى مدة عشوائية بين الرقمين قبل كل رسالة</div></div>
+     <div class="sc-fld"><label>حد ساعي لكل حساب</label>
+      <div class="sc-ig"><input name="per_account_hourly_limit" type="number" min="0" value="{{ cfg.per_account_hourly_limit }}">
+       <span class="unit">/ ساعة</span></div>
+      <div class="sc-hint">0 = بلا حد</div></div>
+     <div class="sc-fld"><label>حد يومي لكل حساب</label>
+      <div class="sc-ig"><input name="per_account_daily_limit" type="number" min="0" value="{{ cfg.per_account_daily_limit }}">
+       <span class="unit">/ يوم</span></div>
+      <div class="sc-hint">0 = بلا حد</div></div>
+    </div>
+    <label class="sc-check">
+     <input type="checkbox" name="randomize_send" {{ 'checked' if cfg.randomize_send == '1' }}>
+     <span><span class="t">ترتيب عشوائي</span>
+      <span class="d">ترتيب المستلمين + اختيار الحساب المرسِل بشكل عشوائي (أأمن ضد البلوك).</span></span></label>
+    <label class="sc-check">
+     <input type="checkbox" name="save_to_sent" {{ 'checked' if cfg.save_to_sent == '1' }}>
+     <span><span class="t">حفظ نسخة في مجلد Sent</span>
+      <span class="d">تُحفظ نسخة من كل رسالة مُرسَلة في مجلد المُرسَل.</span></span></label>
+   </div>
+  </div>
+
+  <div class="sc-card">
+   <div class="sc-card-h"><i class="bi bi-calendar-event"></i> موعد الإرسال المجدول (اختياري)</div>
+   <div class="sc-card-b">
+    <div class="sc-grid">
+     <div class="sc-fld"><label>تاريخ الإرسال</label>
+      <div class="sc-ig"><input name="campaign_send_date" type="date" value="{{ cfg.campaign_send_date }}"></div></div>
+     <div class="sc-fld"><label>وقت الإرسال</label>
+      <div class="sc-ig"><input name="campaign_send_time" type="time" value="{{ cfg.campaign_send_time or '12:00' }}"></div></div>
+    </div>
+    <div class="sc-note mt-2">
+     <b>إزاي يشتغل؟</b><br>
+     • لو حطيت <b>موعد في المستقبل</b> → البرنامج يستنّى للموعد ده وبعدين يبعت الحملة تلقائياً.<br>
+     • لو حطيت <b>موعد/تاريخ قديم</b> → الرسائل تتبعت خلال <b>دقيقة</b> وتتسجّل بنفس التاريخ القديم، والردود التلقائية تيجي بعدها.<br>
+     • سيبهم فاضيين → الإرسال يشتغل على طول بالوقت الحالي.
+    </div>
+   </div>
+  </div>
+
+  <div class="d-flex align-items-center gap-2 flex-wrap">
+   <button class="sc-btn"><i class="bi bi-save"></i> حفظ كل الإعدادات</button>
+   <a class="sc-btn-2" href="{{ url_for('send_now') }}"><i class="bi bi-send"></i> إرسال دفعة الآن يدوياً</a>
+   <span class="text-muted small ms-auto">آخر تشغيل دفعة: {{ s.last_run or 'لم يبدأ بعد' }}</span>
+  </div>
+ </form>
+
+ <div class="sc-note mt-3">
+  <b>مثال:</b> 250 موظف، دفعة = 20 رسالة، الفترة = 5 دقائق، تأخير 8–25 ثانية، 5 حسابات →
+  كل حساب يرسل ~4 رسائل كل دفعة بفواصل، وتخلص الحملة خلال ~1–1.5 ساعة.
  </div>
- <div class="form-check mb-3">
-  <input class="form-check-input" type="checkbox" name="enabled" id="en" {{ 'checked' if s.enabled }}>
-  <label class="form-check-label" for="en"><strong>تفعيل الإرسال المجدول التلقائي</strong></label></div>
-
- <h5>الحماية من البلوك</h5>
- <div class="row">
-  <div class="col-6 mb-2"><label>أقل تأخير بين رسالتين (ثانية)</label>
-   <input name="send_min_delay" type="number" min="0" class="form-control" value="{{ cfg.send_min_delay }}"></div>
-  <div class="col-6 mb-2"><label>أكبر تأخير بين رسالتين (ثانية)</label>
-   <input name="send_max_delay" type="number" min="0" class="form-control" value="{{ cfg.send_max_delay }}"></div>
-  <div class="col-6 mb-2"><label>حد ساعي لكل حساب (0 = بلا حد)</label>
-   <input name="per_account_hourly_limit" type="number" min="0" class="form-control" value="{{ cfg.per_account_hourly_limit }}"></div>
-  <div class="col-6 mb-2"><label>حد يومي لكل حساب (0 = بلا حد)</label>
-   <input name="per_account_daily_limit" type="number" min="0" class="form-control" value="{{ cfg.per_account_daily_limit }}"></div>
- </div>
- <div class="form-check mb-1">
-  <input class="form-check-input" type="checkbox" name="randomize_send" id="rnd" {{ 'checked' if cfg.randomize_send == '1' }}>
-  <label class="form-check-label" for="rnd">ترتيب المستلمين عشوائي + اختيار الحساب المرسِل عشوائي</label></div>
- <div class="form-check mb-3">
-  <input class="form-check-input" type="checkbox" name="save_to_sent" id="sv" {{ 'checked' if cfg.save_to_sent == '1' }}>
-  <label class="form-check-label" for="sv">حفظ نسخة من كل رسالة في مجلد Sent عبر IMAP</label></div>
-
- <h5>تاريخ ووقت الإرسال (اختياري)</h5>
- <p class="text-muted small mb-2">لو حدّدت تاريخ ووقت، كل رسائل الحملة هتتسجّل بالتاريخ ده
-  (زي ما تكون اتبعتت وقتها). سيبهم فاضيين عشان يستخدم وقت الإرسال الفعلي.</p>
- <div class="row">
-  <div class="col-6 mb-2"><label>التاريخ</label>
-   <input name="campaign_send_date" type="date" class="form-control" value="{{ cfg.campaign_send_date }}"></div>
-  <div class="col-6 mb-2"><label>الوقت</label>
-   <input name="campaign_send_time" type="time" class="form-control" value="{{ cfg.campaign_send_time or '12:00' }}"></div>
- </div>
-
- <div><button class="btn btn-primary"><i class="bi bi-save"></i> حفظ كل الإعدادات</button></div>
- <p class="text-muted small mt-2 mb-0">آخر تشغيل دفعة: {{ s.last_run or 'لم يبدأ بعد' }}</p>
-</form>
-
-<div class="alert alert-info" style="max-width:640px">
- <strong>مثال:</strong> 250 موظف، دفعة = 20، الفترة = 5 دقائق، تأخير 8–25 ثانية،
- 5 حسابات → كل حساب يرسل ~4 رسائل كل دفعة بفواصل زمنية، وتخلص الحملة خلال ~1–1.5 ساعة.
 </div>
-<a class="btn btn-warning" href="{{ url_for('send_now') }}"><i class="bi bi-send"></i> إرسال دفعة الآن يدوياً</a>
 {% endblock %}
 """
 
