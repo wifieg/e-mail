@@ -1,0 +1,14 @@
+# لا تنسخ دي داخل صورة Docker
+data/
+backups/
+build/
+dist/
+__pycache__/
+*.pyc
+*.spec
+EmailManager.exe
+EmailManager.exe.old*
+*.rar
+mailu/
+local_mail/
+.deploy_email_manager_key*

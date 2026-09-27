@@ -1,0 +1,36 @@
+# ===== أسرار وبيانات — ممنوع ترفع أبداً =====
+data/
+backups/
+*.key
+*.pem
+secret.key
+flask_secret
+*.env
+.env
+.deploy_email_manager_key*
+
+# ===== مخرجات البناء والتنفيذي =====
+build/
+dist/
+*.spec
+*.exe
+*.exe.old*
+EmailManager.exe*
+
+# ===== نسخ احتياطية / مؤقتة =====
+*.bak
+*.bak_*
+app.py.bak*
+*.rar
+*.log
+
+# ===== أدوات قديمة (سيرفر خارجي — لم تعد مستخدمة، وتحتوي مفاتيح) =====
+local_mail/
+mailu/
+
+# ===== بايثون =====
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/

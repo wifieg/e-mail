@@ -1,0 +1,23 @@
+services:
+  email-manager:
+    build: .
+    image: email-manager:latest
+    container_name: email-manager
+    restart: unless-stopped
+    ports:
+      - "8000:8000"     # واجهة الويب
+      - "8025:8025"     # SMTP الداخلي (للإرسال — وحتى Outlook خارجي)
+      - "8143:8143"     # IMAP الداخلي (للقراءة — وحتى Outlook خارجي)
+    volumes:
+      # مزامنة الكود: تعدّل app.py على جهازك ثم "docker compose restart" يطبّقها فوراً
+      - ./app.py:/app/app.py
+      # مزامنة البيانات: نفس مجلد data على جهازك = نفس قاعدة بيانات الـ.exe
+      - ./data:/app/data
+    environment:
+      EM_HOST: "0.0.0.0"
+      EM_PORT: "8000"
+      EM_NO_BROWSER: "1"
+      EM_DB: "/app/data/email_manager.db"
+      EM_INT_SMTP_PORT: "8025"
+      EM_INT_IMAP_PORT: "8143"
+      EM_RELOAD: "1"      # إعادة تحميل تلقائي عند تعديل app.py — بدون إيقاف يدوي
