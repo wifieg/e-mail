@@ -2766,6 +2766,12 @@ BASE_TPL = """
  .olx-item .r1{display:flex;align-items:center;gap:6px}
  .olx-item .who{font-size:.9rem;color:#201f1e;flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
  .olx-item .dt{font-size:.75rem;color:#605e5c;white-space:nowrap}
+ .olx-item .olx-quick{display:none;align-items:center;gap:10px;margin-inline-start:2px}
+ .olx-item:hover .dt,.olx-item.sel .dt{display:none}
+ .olx-item:hover .olx-quick,.olx-item.sel .olx-quick{display:inline-flex}
+ .olx-quick i{cursor:pointer;color:#5b6472;font-size:1rem;line-height:1}
+ .olx-quick i:hover{color:#0f6cbd}
+ .olx-quick i.xdel:hover{color:#c0392b}
  .olx-item .sub{font-size:.85rem;color:#201f1e;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
  .olx-item .pre{font-size:.8rem;color:#605e5c;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
  .olx-item.unseen{border-inline-start-color:#0f6cbd}
@@ -4426,6 +4432,10 @@ MAIL_TPL = """
       {% if m.attach %}<i class="bi bi-paperclip text-muted small"></i>{% endif %}
       {% if m.flagged %}<i class="bi bi-flag-fill text-danger small"></i>{% endif %}
       <span class="dt">{{ m.date|mdate }}</span>
+      <span class="olx-quick">
+       <i class="bi bi-reply-fill" title="رد" onclick="return olQuick(event,{{ m.uid }},'reply')"></i>
+       <i class="bi bi-x-lg xdel" title="حذف" onclick="return olQuick(event,{{ m.uid }},'delete')"></i>
+      </span>
      </div>
      <div class="sub">{{ m.subject }}{% if m.answered %} <i class="bi bi-reply small"></i>{% endif %}</div>
     </a>
@@ -4493,6 +4503,13 @@ function olOpen(el, uid){
  pane.innerHTML = '<div class="olx-empty">جارٍ التحميل…</div>';
  fetch(url).then(function(r){return r.text()}).then(function(h){pane.innerHTML=h;})
   .catch(function(){pane.innerHTML='<div class="olx-empty">تعذّر فتح الرسالة</div>'});
+ return false;
+}
+function olQuick(ev, uid, act){
+ ev.preventDefault(); ev.stopPropagation();
+ _curUid = uid;
+ if(act==='reply') rbCompose('reply');
+ else rbAct(act);
  return false;
 }
 function rbCompose(mode){
