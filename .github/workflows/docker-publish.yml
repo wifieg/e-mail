@@ -1,0 +1,32 @@
+name: build-and-publish-image
+
+# يبني صورة Docker على سيرفرات GitHub وينشرها على GitHub Container Registry (GHCR)
+# عند كل تحديث للفرع main — بدون أي بناء على جهازك أو سيرفر Dockge.
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ghcr.io/mahmoud022001/emails:latest
