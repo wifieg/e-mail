@@ -93,7 +93,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.3"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.0.4"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -489,7 +489,8 @@ def init_db():
             cur.execute(f"ALTER TABLE accounts ADD COLUMN {col} {ddl}")
 
     emp_cols = _table_columns(cur, "employees")
-    for col in ("title", "department", "phone", "signature", "password", "logo"):
+    for col in ("title", "department", "phone", "signature", "password", "logo",
+                "iqama", "emp_number"):
         if col not in emp_cols:
             cur.execute(f"ALTER TABLE employees ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
     if "emp_last_check" not in emp_cols:
@@ -3174,26 +3175,27 @@ EMPLOYEES_TPL = """
  <a class="btn btn-success btn-sm" href="{{ url_for('connect_all_employees') }}">
   <i class="bi bi-plug"></i> اتصال بصناديق الكل + تحميل الوارد/المُرسَل</a>
 </div>
-<p class="text-muted small">صيغة CSV: <code>name,email,title,department,phone,password</code> —
+<p class="text-muted small">صيغة CSV: <code>name,email,title,department,phone,password,iqama,emp_number</code> —
  أول عمودين مطلوبان، والباقي اختياري، ويُتجاهل صف العنوان. عمود <code>password</code>
  لبيانات دخول صندوق الموظف (للرد العكسي).
  قالب التوقيع تضبطه من صفحة <a href="{{ url_for('templates_page') }}">توقيع الموظفين</a>.</p>
 <div class="mb-3" style="max-width:420px">
  <div class="input-group">
   <span class="input-group-text"><i class="bi bi-search"></i></span>
-  <input id="empSearch" class="form-control" placeholder="بحث بالاسم أو البريد أو القسم…"
+  <input id="empSearch" class="form-control" placeholder="بحث بالاسم أو البريد أو الإقامة أو الرقم الوظيفي…"
          onkeyup="empFilter()" autocomplete="off">
  </div>
  <div class="form-text" id="empCount"></div>
 </div>
 <div class="table-responsive">
 <table class="table table-striped align-middle" id="empTable">
- <thead><tr><th>الاسم</th><th>البريد</th><th>المنصب</th><th>القسم</th><th>الهاتف</th>
+ <thead><tr><th>الاسم</th><th>البريد</th><th>الإقامة</th><th>الرقم الوظيفي</th><th>المنصب</th><th>القسم</th><th>الهاتف</th>
    <th>الحساب المسؤول</th><th>توقيع</th><th>الاتصال</th><th>نشط</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for e in rows %}
- <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ e.department ~ ' ' ~ e.title)|lower }}">
-  <td>{{ e.name }}</td><td dir="ltr">{{ e.email }}</td><td>{{ e.title }}</td>
+ <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ e.department ~ ' ' ~ e.title ~ ' ' ~ (e.iqama or '') ~ ' ' ~ (e.emp_number or ''))|lower }}">
+  <td>{{ e.name }}</td><td dir="ltr">{{ e.email }}</td>
+  <td dir="ltr">{{ e.iqama or '—' }}</td><td dir="ltr">{{ e.emp_number or '—' }}</td><td>{{ e.title }}</td>
   <td>{{ e.department }}</td><td>{{ e.phone }}</td>
   <td class="small">{% if e.owner_email %}<span class="badge bg-info text-dark">{{ e.owner_name or e.owner_email }}</span>
       {% else %}<a class="text-muted" href="{{ url_for('distribution') }}">— تعيين —</a>{% endif %}</td>
@@ -3218,7 +3220,7 @@ EMPLOYEES_TPL = """
       onclick="return confirm('حذف الموظف؟')"><i class="bi bi-trash"></i></a>
   </td>
  </tr>
- {% else %}<tr><td colspan="10" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
+ {% else %}<tr><td colspan="12" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
  </tbody>
 </table>
 </div>
@@ -3231,6 +3233,10 @@ EMPLOYEES_TPL = """
   <div class="modal-body">
    <div class="mb-2"><label>الاسم</label><input name="name" class="form-control" value="{{ e.name }}" required></div>
    <div class="mb-2"><label>البريد</label><input name="email" type="email" class="form-control" value="{{ e.email }}" required></div>
+   <div class="row">
+    <div class="col-6 mb-2"><label>رقم الإقامة</label><input name="iqama" class="form-control" dir="ltr" value="{{ e.iqama or '' }}"></div>
+    <div class="col-6 mb-2"><label>الرقم الوظيفي</label><input name="emp_number" class="form-control" dir="ltr" value="{{ e.emp_number or '' }}"></div>
+   </div>
    <div class="row">
     <div class="col-6 mb-2"><label>المنصب</label><input name="title" class="form-control" value="{{ e.title }}"></div>
     <div class="col-6 mb-2"><label>القسم</label><input name="department" class="form-control" value="{{ e.department }}"></div>
@@ -3257,11 +3263,15 @@ EMPLOYEES_TPL = """
    <div class="mb-2"><label>الاسم</label><input name="name" class="form-control" required></div>
    <div class="mb-2"><label>البريد الإلكتروني</label><input name="email" type="email" class="form-control" required></div>
    <div class="row">
+    <div class="col-6 mb-2"><label>رقم الإقامة</label><input name="iqama" class="form-control" dir="ltr"></div>
+    <div class="col-6 mb-2"><label>الرقم الوظيفي</label><input name="emp_number" class="form-control" dir="ltr"></div>
+   </div>
+   <div class="row">
     <div class="col-6 mb-2"><label>المنصب</label><input name="title" class="form-control"></div>
     <div class="col-6 mb-2"><label>القسم</label><input name="department" class="form-control"></div>
    </div>
    <div class="mb-2"><label>الهاتف</label><input name="phone" class="form-control"></div>
-   <div class="mb-2"><label>كلمة مرور صندوق الموظف (اختياري — للرد العكسي)</label>
+   <div class="mb-2"><label>كلمة مرور صندوق الموظف (اختياري — الافتراضي 022001)</label>
     <input name="password" type="password" class="form-control" autocomplete="new-password"></div>
    <div class="mb-2"><label>التوقيع (اختياري)</label>
     <textarea name="signature" class="form-control" rows="3"
@@ -3366,7 +3376,45 @@ TEMPLATES_TPL = """
    {% endfor %}
   </div>
  </div>
+
+ <div class="sig-card" id="emps">
+  <div class="sig-card-h"><i class="bi bi-people-fill"></i> توقيع كل موظف (يتغلّب على توقيع الحساب الرئيسي)</div>
+  <div class="sig-card-b">
+   <div class="sig-hint">كل موظف يرث توقيع حسابه الرئيسي تلقائياً. اكتب توقيع خاص هنا واحفظ عشان يتغلّب عليه —
+    سيبه فاضي واحفظ عشان يرجع يرث توقيع الحساب الرئيسي.</div>
+   <input id="empSigSearch" class="sig-ta mb-3" style="font-family:inherit"
+          placeholder="بحث بالاسم أو البريد أو الإقامة أو الرقم الوظيفي…"
+          onkeyup="empSigFilter()" autocomplete="off">
+   {% for e in emps %}
+   <div class="sig-acc emp-sig-row"
+        data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ (e.iqama or '') ~ ' ' ~ (e.emp_number or ''))|lower }}">
+    <div class="sig-acc-top">
+     <span class="em" dir="ltr">{{ e.email }}</span>
+     <span class="nm">{{ e.name }}</span>
+     <span class="nm">· حسابه: <b>{{ e.owner_name or e.owner_email or 'غير مربوط' }}</b></span>
+     {% if e.signature %}<span class="badge bg-info text-dark ms-auto">توقيع خاص</span>
+     {% else %}<span class="badge bg-secondary ms-auto">يرث الرئيسي</span>{% endif %}
+    </div>
+    <form method="POST" action="{{ url_for('save_employee_signature', eid=e.id) }}">
+     <textarea name="signature" class="sig-ta mb-2" rows="3"
+       placeholder="فاضي = يرث توقيع الحساب الرئيسي{{ ' (' ~ e.owner_email ~ ')' if e.owner_email }}">{{ e.signature }}</textarea>
+     <div class="text-md-end"><button class="sig-btn"><i class="bi bi-check-lg"></i> حفظ توقيع الموظف</button></div>
+    </form>
+   </div>
+   {% else %}
+   <p class="text-muted mb-0 small">مفيش موظفين لسه.</p>
+   {% endfor %}
+  </div>
+ </div>
 </div>
+<script>
+function empSigFilter(){
+ var q=(document.getElementById('empSigSearch').value||'').trim().toLowerCase();
+ document.querySelectorAll('.emp-sig-row').forEach(function(r){
+  r.style.display = (!q || (r.dataset.s||'').indexOf(q)!==-1) ? '' : 'none';
+ });
+}
+</script>
 {% endblock %}
 """
 
@@ -3511,7 +3559,7 @@ CAMPAIGNS_TPL = """
 <div class="table-wrap">
 <table class="table align-middle">
  <thead><tr><th>#</th><th>الاسم</th><th>القالب</th><th>الحالة</th>
-   <th>التقدّم</th><th>إجراءات</th></tr></thead>
+   <th>التقدّم</th><th>تاريخ الإرسال</th><th>تاريخ الاستقبال (الرد)</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for c in rows %}
  <tr>
@@ -3527,6 +3575,13 @@ CAMPAIGNS_TPL = """
    </div>
    <small class="text-muted">{{ c.done }}/{{ c.total }}</small>
   </td>
+  <td class="small text-nowrap">
+   {% if c.send_date %}<i class="bi bi-calendar-event text-primary"></i> {{ c.send_date }} {{ c.send_time }}
+   {% elif c.last_sent %}<i class="bi bi-clock text-muted"></i> {{ c.last_sent }}
+   {% else %}<span class="text-muted">—</span>{% endif %}</td>
+  <td class="small text-nowrap">
+   {% if c.last_reply %}<i class="bi bi-reply-fill text-success"></i> {{ c.last_reply }}
+   {% else %}<span class="text-muted">— لا ردود بعد</span>{% endif %}</td>
   <td class="text-nowrap">
    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('campaign_detail', cid=c.id) }}">تفاصيل</a>
    {% if c.status=='active' %}
@@ -3538,7 +3593,7 @@ CAMPAIGNS_TPL = """
       onclick="return confirm('حذف الحملة؟')">حذف</a>
   </td>
  </tr>
- {% else %}<tr><td colspan="6" class="mlist-empty">لا توجد حملات</td></tr>{% endfor %}
+ {% else %}<tr><td colspan="8" class="mlist-empty">لا توجد حملات</td></tr>{% endfor %}
  </tbody>
 </table>
 </div>
@@ -3743,137 +3798,241 @@ AUTOREPLY_TPL = """
 
 REVERSE_TPL = """
 {% extends "base.html" %}{% block content %}
-<h2><i class="bi bi-robot"></i> الردود التلقائية</h2>
-<p class="text-muted small">لما الموظف يستلم رسالة من أي حساب رئيسي (من حملة أو غيرها)، صندوقه بيردّ
- عليه <b>تلقائياً</b> بعد وقت تحدّده، بنص القالب اللي تختاره (حسب الحساب المرسِل أو القسم أو قالب عام).
- الرد بيتملّى ببيانات الموظف وتوقيعه. يشتغل تلقائياً بعد كل دورة إرسال، أو بضغطة زر.</p>
+<style>
+ .rv-wrap{max-width:1100px;margin:0 auto}
+ .rv-head{display:flex;align-items:center;gap:10px;margin-bottom:2px}
+ .rv-head i{font-size:1.4rem;color:#0f6cbd}
+ .rv-head h2{font-size:1.35rem;margin:0;font-weight:700;color:#1f2937}
+ .rv-sub{color:#6b7280;font-size:.82rem;margin-bottom:14px;line-height:1.8}
+ .rv-stats{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:16px}
+ @media(max-width:640px){.rv-stats{grid-template-columns:repeat(2,1fr)}}
+ .rv-stat{border-radius:12px;padding:14px 16px;color:#fff;box-shadow:0 2px 8px rgba(20,40,80,.1)}
+ .rv-stat h6{font-size:.8rem;opacity:.95;margin:0 0 6px;font-weight:600}
+ .rv-stat .n{font-size:1.7rem;font-weight:800;line-height:1}
+ .rv-card{background:#fff;border:1px solid #e2e6ee;border-radius:12px;margin-bottom:16px;
+   box-shadow:0 1px 4px rgba(20,40,80,.05);overflow:hidden}
+ .rv-card-h{display:flex;align-items:center;gap:8px;padding:11px 16px;background:#f7f9fc;
+   border-bottom:1px solid #e8ebf2;font-weight:700;font-size:.96rem;color:#243043}
+ .rv-card-h i{color:#0f6cbd}
+ .rv-card-b{padding:16px}
+ .rv-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+ @media(max-width:576px){.rv-grid{grid-template-columns:1fr}}
+ .rv-fld label{display:block;font-size:.83rem;font-weight:600;color:#243043;margin-bottom:5px}
+ .rv-inp{width:100%;border:1px solid #d5dae4;border-radius:7px;padding:8px 10px;font-size:.86rem;
+   background:#fcfdff;outline:none}
+ .rv-inp:focus{border-color:#0f6cbd;box-shadow:0 0 0 3px rgba(15,108,189,.1)}
+ textarea.rv-inp{resize:vertical;line-height:1.7}
+ .rv-hint{font-size:.74rem;color:#8a94a6;margin-top:4px}
+ .rv-check{display:flex;align-items:flex-start;gap:9px;padding:10px 12px;border:1px solid #e6e9f0;
+   border-radius:8px;background:#fbfcfe;cursor:pointer}
+ .rv-check input{width:18px;height:18px;accent-color:#0f6cbd;margin-top:1px}
+ .rv-btn{background:#0f6cbd;border:none;color:#fff;padding:9px 18px;border-radius:8px;
+   font-size:.9rem;font-weight:600;cursor:pointer}
+ .rv-btn:hover{background:#115ea3}
+ .rv-btn-o{background:#fff;border:1px solid #e0a336;color:#b3730a;padding:8px 15px;border-radius:8px;
+   font-size:.86rem;font-weight:600;text-decoration:none;display:inline-flex;align-items:center;gap:6px}
+ .rv-btn-o:hover{background:#fff7ea}
+ .rv-acc{border:1.5px solid #c7d0e0;border-inline-start:4px solid #0f6cbd;border-radius:10px;
+   padding:12px;margin-bottom:12px;background:#fbfcfe}
+ .rv-acc-top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+ .rv-acc-top .nm{font-weight:700;color:#243043}
+ .rv-acc-top .em{font-size:.78rem;color:#0f6cbd;direction:ltr}
+ .rv-search{border:1px solid #d5dae4;border-radius:8px;padding:9px 12px;font-size:.88rem;
+   background:#fff;outline:none;width:100%;margin-bottom:12px}
+ .rv-search:focus{border-color:#0f6cbd;box-shadow:0 0 0 3px rgba(15,108,189,.1)}
+ .rv-emp-grp{border:1px solid #e2e6ee;border-radius:10px;margin-bottom:10px;overflow:hidden}
+ .rv-emp-h{display:flex;align-items:center;gap:8px;padding:10px 14px;background:#f2f6fc;cursor:pointer;
+   font-weight:700;font-size:.9rem;color:#243043}
+ .rv-emp-h .chev{transition:transform .18s;color:#0f6cbd}
+ .rv-emp-h.open .chev{transform:rotate(-90deg)}
+ .rv-emp-h .cnt{margin-inline-start:auto;background:#0f6cbd;color:#fff;font-size:.7rem;font-weight:700;
+   padding:2px 9px;border-radius:20px}
+ .rv-emp-list{display:none}
+ .rv-emp-list.open{display:block}
+ .rv-emp-row{display:flex;align-items:center;gap:10px;padding:8px 14px;border-top:1px solid #eef1f6;font-size:.85rem}
+ .rv-emp-row .e-em{color:#0f6cbd;direction:ltr}
+ .rv-emp-row .e-dep{color:#8a94a6;font-size:.78rem}
+ .rv-badge{font-size:.68rem;font-weight:700;padding:2px 8px;border-radius:20px}
+ .rv-badge.on{background:#e6f4ea;color:#1e7e34}.rv-badge.off{background:#f1f3f5;color:#868e96}
+ .rv-badge.rep{background:#eef2f9;color:#0f6cbd}
+ .rv-table{width:100%;border-collapse:collapse;font-size:.84rem}
+ .rv-table th{position:sticky;top:0;background:#eef2f9;color:#334;font-size:.75rem;font-weight:700;padding:8px 10px;text-align:start}
+ .rv-table td{padding:7px 10px;border-bottom:1px solid #eef1f6}
+</style>
+<div class="rv-wrap">
+ <div class="rv-head"><i class="bi bi-robot"></i><h2>الردود التلقائية</h2></div>
+ <div class="rv-sub">لما الموظف يستلم رسالة من حسابه الرئيسي، صندوقه يردّ عليه <b>تلقائياً</b> بعد وقت تحدّده،
+  بنص القالب (حسب الحساب أو القسم أو قالب عام)، ويتملّى ببيانات الموظف وتوقيعه.</div>
 
-<div class="row g-3">
- <div class="col-6 col-md-3">
-  <div class="card text-white bg-primary"><div class="card-body">
-   <h6>موظفون ببيانات دخول</h6>
-   <p class="display-6 mb-0">{{ stats.with_creds }} / {{ stats.total }}</p></div></div></div>
- <div class="col-6 col-md-3"><div class="card text-white bg-warning"><div class="card-body">
-  <h6>بانتظار موعد الرد</h6><p class="display-6 mb-0">{{ stats.waiting }}</p></div></div></div>
- <div class="col-6 col-md-3"><div class="card text-white bg-success"><div class="card-body">
-  <h6>ردود أُرسلت</h6><p class="display-6 mb-0">{{ stats.sent }}</p></div></div></div>
- <div class="col-6 col-md-3"><div class="card text-white bg-danger"><div class="card-body">
-  <h6>ردود فشلت</h6><p class="display-6 mb-0">{{ stats.failed }}</p></div></div></div>
-</div>
-
-<form method="POST" class="card card-body mb-3" style="max-width:680px">
- <div class="alert alert-success py-2 small mb-2">
-  <i class="bi bi-magic"></i> سيرفر بريد كل موظف يُكتشف تلقائياً من نطاق بريده
-  (الاسم + كلمة السر يكفيان). املأ التالي فقط لو كل الموظفين على سيرفر مخصّص واحد.</div>
- <details {{ 'open' if s.emp_imap_server or s.emp_smtp_server }}>
-  <summary class="mb-2" style="cursor:pointer">سيرفر بريد موحّد للموظفين (اختياري)</summary>
-  <div class="row">
-   <div class="col-8 mb-2"><label>IMAP Server</label>
-    <input name="emp_imap_server" class="form-control" placeholder="تلقائي" value="{{ s.emp_imap_server }}"></div>
-   <div class="col-4 mb-2"><label>IMAP Port</label>
-    <input name="emp_imap_port" type="number" class="form-control" placeholder="993" value="{{ s.emp_imap_port }}"></div>
-   <div class="col-8 mb-2"><label>SMTP Server</label>
-    <input name="emp_smtp_server" class="form-control" placeholder="تلقائي" value="{{ s.emp_smtp_server }}"></div>
-   <div class="col-4 mb-2"><label>SMTP Port</label>
-    <input name="emp_smtp_port" type="number" class="form-control" placeholder="587" value="{{ s.emp_smtp_port }}"></div>
-  </div>
-  <div class="mb-2"><label>نوع تشفير SMTP</label>
-   <select name="emp_security" class="form-select">
-    <option value="">تلقائي</option>
-    {% for v,l in [('starttls','STARTTLS (587)'),('ssl','SSL/TLS (465)'),('none','بدون')] %}
-     <option value="{{ v }}" {{ 'selected' if s.emp_security==v }}>{{ l }}</option>{% endfor %}
-   </select></div>
- </details>
-
- <h5 class="mt-3">التوقيت</h5>
- <div class="row">
-  <div class="col-6 mb-2">
-   <label>الرد بعد كم دقيقة من وصول الرسالة</label>
-   <input name="reverse_delay_minutes" type="number" min="0" class="form-control"
-          value="{{ s.reverse_delay_minutes or delay_default }}">
-   <div class="form-text">مثال: 15 = كل موظف يرد بعد ربع ساعة من استلامه.</div></div>
-  <div class="col-6 mb-2">
-   <label>فحص صناديق الموظفين كل (دقيقة)</label>
-   <input name="reverse_scan_minutes" type="number" min="1" class="form-control"
-          value="{{ s.reverse_scan_minutes or scan_default }}"></div>
+ <div class="rv-stats">
+  <div class="rv-stat" style="background:linear-gradient(135deg,#0f6cbd,#2b88d8)">
+   <h6>موظفون ببيانات دخول</h6><div class="n">{{ stats.with_creds }} / {{ stats.total }}</div></div>
+  <div class="rv-stat" style="background:linear-gradient(135deg,#e0a800,#e6b52c)">
+   <h6>بانتظار موعد الرد</h6><div class="n">{{ stats.waiting }}</div></div>
+  <div class="rv-stat" style="background:linear-gradient(135deg,#1e9e54,#28a745)">
+   <h6>ردود أُرسلت</h6><div class="n">{{ stats.sent }}</div></div>
+  <div class="rv-stat" style="background:linear-gradient(135deg,#c0392b,#dc3545)">
+   <h6>ردود فشلت</h6><div class="n">{{ stats.failed }}</div></div>
  </div>
 
- <h5 class="mt-3">التشغيل</h5>
- <div class="form-check mb-2">
-  <input class="form-check-input" type="checkbox" name="reverse_enabled" id="re" {{ 'checked' if s.reverse_enabled=='1' }}>
-  <label class="form-check-label" for="re"><strong>تفعيل الرد العكسي التلقائي</strong></label></div>
- <div class="row">
-  <div class="col-4 mb-2"><label>صناديق تُفحص كل دورة</label>
-   <input name="reverse_batch_size" type="number" min="1" class="form-control" value="{{ s.reverse_batch_size }}">
-   <div class="form-text">اجعله بعدد الموظفين ({{ stats.with_creds }}) حتى يلتزم الجميع
-    بموعد الرد.</div></div>
-  <div class="col-4 mb-2"><label>أقل تأخير (ث)</label>
-   <input name="reverse_min_delay" type="number" min="0" class="form-control" value="{{ s.reverse_min_delay }}"></div>
-  <div class="col-4 mb-2"><label>أكبر تأخير (ث)</label>
-   <input name="reverse_max_delay" type="number" min="0" class="form-control" value="{{ s.reverse_max_delay }}"></div>
- </div>
-
- <h5 class="mt-3">نص الرد الافتراضي</h5>
- <textarea name="reverse_default_reply" class="form-control mb-2" rows="4">{{ s.reverse_default_reply }}</textarea>
-
- <h5 class="mt-3">نص الرد لكل حساب مرسِل
-  <small class="text-muted">(الأولوية الأعلى — الرد يذهب لنفس الحساب الذي أرسل)</small></h5>
- {% for a in accs %}
-  <div class="border rounded p-2 mb-2">
-   <div class="d-flex align-items-center gap-2 mb-2">
-    <strong>{{ a.display_name or a.email }}</strong>
-    <span class="text-muted small">{{ a.email }}</span>
-    <span class="ms-auto small">تأخير خاص (دقيقة):</span>
-    <input name="accdelay::{{ a.id }}" type="number" min="0" style="width:90px"
-           class="form-control form-control-sm"
-           value="{{ acc_replies.get(a.id, {}).get('delay_minutes', 0) or '' }}"
-           placeholder="عام">
+ <form method="POST">
+  <div class="rv-card">
+   <div class="rv-card-h"><i class="bi bi-clock-history"></i> التوقيت والتشغيل</div>
+   <div class="rv-card-b">
+    <label class="rv-check mb-3">
+     <input type="checkbox" name="reverse_enabled" {{ 'checked' if s.reverse_enabled=='1' }}>
+     <span><span class="t fw-bold">تفعيل الرد العكسي التلقائي</span></span></label>
+    <div class="rv-grid">
+     <div class="rv-fld"><label>الرد بعد كم دقيقة من وصول الرسالة</label>
+      <input class="rv-inp" name="reverse_delay_minutes" type="number" min="0"
+             value="{{ s.reverse_delay_minutes or delay_default }}">
+      <div class="rv-hint">مثال: 15 = كل موظف يرد بعد ربع ساعة من استلامه.</div></div>
+     <div class="rv-fld"><label>فحص صناديق الموظفين كل (دقيقة)</label>
+      <input class="rv-inp" name="reverse_scan_minutes" type="number" min="1"
+             value="{{ s.reverse_scan_minutes or scan_default }}"></div>
+     <div class="rv-fld"><label>صناديق تُفحص كل دورة</label>
+      <input class="rv-inp" name="reverse_batch_size" type="number" min="1" value="{{ s.reverse_batch_size }}">
+      <div class="rv-hint">اجعله بعدد الموظفين ({{ stats.with_creds }}) حتى يلتزم الجميع بالموعد.</div></div>
+     <div class="rv-fld"><label>مدى التأخير العشوائي بين الردود (ثانية)</label>
+      <div class="d-flex gap-2">
+       <input class="rv-inp" name="reverse_min_delay" type="number" min="0" value="{{ s.reverse_min_delay }}" placeholder="أقل">
+       <input class="rv-inp" name="reverse_max_delay" type="number" min="0" value="{{ s.reverse_max_delay }}" placeholder="أكبر"></div></div>
+    </div>
    </div>
-   <textarea name="accrep::{{ a.id }}" class="form-control" rows="3"
-     placeholder="اكتب هنا الرد الذي سيرسله كل موظف لهذا الحساب">{{ acc_replies.get(a.id, {}).get('body', '') }}</textarea>
   </div>
- {% else %}<p class="text-muted small">أضف حسابات مرسِلة أولاً.</p>{% endfor %}
 
- <h5 class="mt-2">نص الرد حسب القسم <small class="text-muted">(يُستخدم لو نص الحساب فارغ)</small></h5>
- {% for d in departments %}
-  <div class="mb-2"><label>{{ d or '(بدون قسم)' }}</label>
-   <textarea name="dept::{{ d }}" class="form-control" rows="2">{{ dept_map.get(d, '') }}</textarea></div>
- {% else %}<p class="text-muted small">لا توجد أقسام بعد — أضف موظفين بأقسام.</p>{% endfor %}
+  <div class="rv-card">
+   <div class="rv-card-h"><i class="bi bi-hdd-network"></i> سيرفر بريد موحّد للموظفين (اختياري)</div>
+   <div class="rv-card-b">
+    <div class="rv-hint mb-2"><i class="bi bi-magic"></i> سيرفر كل موظف يُكتشف تلقائياً من نطاق بريده —
+     املأ التالي فقط لو كل الموظفين على سيرفر واحد مخصّص.</div>
+    <div class="rv-grid">
+     <div class="rv-fld"><label>IMAP Server</label>
+      <input class="rv-inp" name="emp_imap_server" placeholder="تلقائي" value="{{ s.emp_imap_server }}"></div>
+     <div class="rv-fld"><label>IMAP Port</label>
+      <input class="rv-inp" name="emp_imap_port" type="number" placeholder="993" value="{{ s.emp_imap_port }}"></div>
+     <div class="rv-fld"><label>SMTP Server</label>
+      <input class="rv-inp" name="emp_smtp_server" placeholder="تلقائي" value="{{ s.emp_smtp_server }}"></div>
+     <div class="rv-fld"><label>SMTP Port</label>
+      <input class="rv-inp" name="emp_smtp_port" type="number" placeholder="587" value="{{ s.emp_smtp_port }}"></div>
+     <div class="rv-fld"><label>نوع تشفير SMTP</label>
+      <select class="rv-inp" name="emp_security">
+       <option value="">تلقائي</option>
+       {% for v,l in [('starttls','STARTTLS (587)'),('ssl','SSL/TLS (465)'),('none','بدون')] %}
+        <option value="{{ v }}" {{ 'selected' if s.emp_security==v }}>{{ l }}</option>{% endfor %}
+      </select></div>
+    </div>
+   </div>
+  </div>
 
- <p class="small text-muted">المتغيرات: <code>{name}</code> <code>{title}</code>
-  <code>{department}</code> <code>{phone}</code> <code>{email}</code></p>
- <div><button class="btn btn-primary"><i class="bi bi-save"></i> حفظ كل الإعدادات</button></div>
-</form>
+  <div class="rv-card">
+   <div class="rv-card-h"><i class="bi bi-chat-left-text"></i> نصوص الردود</div>
+   <div class="rv-card-b">
+    <div class="rv-fld mb-3"><label>نص الرد الافتراضي (يُستخدم لو مفيش نص للحساب أو القسم)</label>
+     <textarea class="rv-inp" name="reverse_default_reply" rows="3">{{ s.reverse_default_reply }}</textarea></div>
+    <div class="rv-card-h" style="background:none;border:none;padding:6px 0;font-size:.9rem">
+     <i class="bi bi-1-circle"></i> نص الرد لكل حساب رئيسي (الأولوية الأعلى)</div>
+    {% for a in accs %}
+     <div class="rv-acc">
+      <div class="rv-acc-top">
+       <span class="nm">{{ a.display_name or a.email }}</span><span class="em">{{ a.email }}</span>
+       <span class="ms-auto rv-hint">تأخير خاص (دقيقة):</span>
+       <input class="rv-inp" style="width:90px" name="accdelay::{{ a.id }}" type="number" min="0"
+              value="{{ acc_replies.get(a.id, {}).get('delay_minutes', 0) or '' }}" placeholder="عام">
+      </div>
+      <textarea class="rv-inp" name="accrep::{{ a.id }}" rows="2"
+        placeholder="الرد الذي سيرسله موظفو هذا الحساب له">{{ acc_replies.get(a.id, {}).get('body', '') }}</textarea>
+     </div>
+    {% else %}<p class="text-muted small">أضف حسابات مرسِلة أولاً.</p>{% endfor %}
+    <div class="rv-card-h" style="background:none;border:none;padding:10px 0 6px;font-size:.9rem">
+     <i class="bi bi-2-circle"></i> نص الرد حسب القسم (لو نص الحساب فاضي)</div>
+    <div class="rv-grid">
+    {% for d in departments %}
+     <div class="rv-fld"><label>{{ d or '(بدون قسم)' }}</label>
+      <textarea class="rv-inp" name="dept::{{ d }}" rows="2">{{ dept_map.get(d, '') }}</textarea></div>
+    {% else %}<p class="text-muted small">لا توجد أقسام بعد.</p>{% endfor %}
+    </div>
+    <p class="rv-hint mt-2">المتغيرات: <code>{name}</code> <code>{title}</code>
+     <code>{department}</code> <code>{phone}</code> <code>{email}</code></p>
+   </div>
+  </div>
 
-<div class="d-flex gap-2 flex-wrap">
- <a class="btn btn-warning" href="{{ url_for('reverse_run') }}">
-  <i class="bi bi-play-circle"></i> افحص الصناديق الآن</a>
- <a class="btn btn-outline-warning" href="{{ url_for('reverse_flush') }}">
-  <i class="bi bi-send-check"></i> أرسل ما حان موعده الآن</a>
-</div>
+  <div class="d-flex align-items-center gap-2 flex-wrap mb-3">
+   <button class="rv-btn"><i class="bi bi-save"></i> حفظ كل الإعدادات</button>
+   <a class="rv-btn-o" href="{{ url_for('reverse_run') }}"><i class="bi bi-play-circle"></i> افحص الصناديق الآن</a>
+   <a class="rv-btn-o" href="{{ url_for('reverse_flush') }}"><i class="bi bi-send-check"></i> أرسل ما حان موعده</a>
+  </div>
+ </form>
 
-{% if queue %}
-<div class="card mt-3"><div class="card-body">
- <h5 class="mb-3">ردود بانتظار موعدها ({{ stats.waiting }})</h5>
- <div class="table-wrap" style="max-height:360px;overflow:auto">
- <table class="table table-sm align-middle">
-  <thead><tr><th>الموظف</th><th>سيرد على</th><th>الموضوع</th><th>وصلت</th><th>موعد الرد</th></tr></thead>
-  <tbody>
-  {% for q in queue %}
-   <tr><td class="fw-semibold">{{ q.name }}<div class="small text-muted">{{ q.emp_email }}</div></td>
-    <td class="small">{{ q.account_email }}</td>
-    <td class="small">{{ q.subject }}</td>
-    <td class="small text-muted">{{ q.received_at }}</td>
-    <td class="small"><span class="badge bg-warning text-dark">{{ q.due_at }}</span></td></tr>
-  {% endfor %}
-  </tbody>
- </table>
+ <div class="rv-card">
+  <div class="rv-card-h"><i class="bi bi-people-fill"></i> موظفو كل حساب رئيسي</div>
+  <div class="rv-card-b">
+   <input class="rv-search" id="rvEmpSearch" placeholder="بحث بالاسم أو البريد أو القسم…"
+          onkeyup="rvEmpFilter()" autocomplete="off">
+   {% for a in accs %}
+   {% set grp = emps|selectattr('owner_account_id','equalto',a.id)|list %}
+   <div class="rv-emp-grp" data-acc="{{ (a.display_name ~ ' ' ~ a.email)|lower }}">
+    <div class="rv-emp-h" onclick="this.classList.toggle('open');this.nextElementSibling.classList.toggle('open')">
+     <i class="bi bi-chevron-left chev"></i>
+     <i class="bi bi-send-fill"></i> {{ a.display_name or a.email }}
+     <span class="em" style="font-size:.76rem;color:#0f6cbd;direction:ltr">{{ a.email }}</span>
+     <span class="cnt">{{ grp|length }} موظف</span>
+    </div>
+    <div class="rv-emp-list">
+     {% for e in grp %}
+     <div class="rv-emp-row" data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ (e.department or ''))|lower }}">
+      <span class="fw-semibold">{{ e.name }}</span>
+      <span class="e-em">{{ e.email }}</span>
+      {% if e.department %}<span class="e-dep">· {{ e.department }}</span>{% endif %}
+      <span class="ms-auto d-flex gap-1">
+       <span class="rv-badge {{ 'on' if e.emp_connected else 'off' }}">{{ 'متصل' if e.emp_connected else 'غير متصل' }}</span>
+       {% if e.n_replies %}<span class="rv-badge rep">{{ e.n_replies }} رد</span>{% endif %}
+      </span>
+     </div>
+     {% else %}<div class="rv-emp-row text-muted">لا يوجد موظفون تحت هذا الحساب</div>{% endfor %}
+    </div>
+   </div>
+   {% else %}<p class="text-muted small mb-0">أضف حسابات رئيسية وموظفين أولاً.</p>{% endfor %}
+  </div>
  </div>
-</div></div>
-{% endif %}
-<p class="small text-muted mt-2">بيانات دخول كل موظف تُدخَل من صفحة
- <a href="{{ url_for('employees') }}">الموظفين</a> (خانة كلمة المرور)، أو عبر عمود
- <code>password</code> في ملف CSV.</p>
+
+ {% if queue %}
+ <div class="rv-card">
+  <div class="rv-card-h"><i class="bi bi-hourglass-split"></i> ردود بانتظار موعدها ({{ stats.waiting }})</div>
+  <div class="rv-card-b">
+   <div style="max-height:360px;overflow:auto;border:1px solid #e8ebf2;border-radius:9px">
+   <table class="rv-table">
+    <thead><tr><th>الموظف</th><th>سيرد على</th><th>الموضوع</th><th>وصلت</th><th>موعد الرد</th></tr></thead>
+    <tbody>
+    {% for q in queue %}
+     <tr><td class="fw-semibold">{{ q.name }}<div class="small text-muted" dir="ltr">{{ q.emp_email }}</div></td>
+      <td class="small" dir="ltr">{{ q.account_email }}</td>
+      <td class="small">{{ q.subject }}</td>
+      <td class="small text-muted">{{ q.received_at }}</td>
+      <td class="small"><span class="rv-badge" style="background:#fff3cd;color:#8a5a00">{{ q.due_at }}</span></td></tr>
+    {% endfor %}
+    </tbody>
+   </table>
+   </div>
+  </div>
+ </div>
+ {% endif %}
+</div>
+<script>
+function rvEmpFilter(){
+ var q=(document.getElementById('rvEmpSearch').value||'').trim().toLowerCase();
+ document.querySelectorAll('.rv-emp-grp').forEach(function(grp){
+  var rows=grp.querySelectorAll('.rv-emp-row[data-s]'), any=false;
+  rows.forEach(function(r){
+   var hit=!q||(r.dataset.s||'').indexOf(q)!==-1||(grp.dataset.acc||'').indexOf(q)!==-1;
+   r.style.display=hit?'':'none'; if(hit) any=true;
+  });
+  grp.style.display=(any||!q)?'':'none';
+  if(q){ grp.querySelector('.rv-emp-h').classList.add('open');
+         grp.querySelector('.rv-emp-list').classList.add('open'); }
+ });
+}
+</script>
 {% endblock %}
 """
 
@@ -5003,136 +5162,190 @@ ME_TPL = """
 
 DISTRIBUTION_TPL = """
 {% extends "base.html" %}{% block content %}
-<div class="page-head">
- <div><h1>توزيع الموظفين على الحسابات</h1>
-  <div class="sub">كل حساب مرسِل يصبح مسؤولاً عن مجموعته — ولا يُرسل لغيرها</div></div>
- <a class="btn btn-outline-danger btn-sm" href="{{ url_for('distribution_clear') }}"
-    onclick="return confirm('إلغاء كل التوزيع؟')">إلغاء التوزيع</a>
+<style>
+ .ds-wrap{max-width:1100px;margin:0 auto}
+ .ds-head{display:flex;align-items:center;gap:10px;margin-bottom:4px}
+ .ds-head i{font-size:1.4rem;color:#0f6cbd}
+ .ds-head h2{font-size:1.35rem;margin:0;font-weight:700;color:#1f2937}
+ .ds-sub{color:#6b7280;font-size:.84rem;margin-bottom:16px}
+ .ds-card{background:#fff;border:1px solid #e2e6ee;border-radius:12px;margin-bottom:16px;
+   box-shadow:0 1px 4px rgba(20,40,80,.05);overflow:hidden}
+ .ds-card-h{display:flex;align-items:center;gap:8px;padding:11px 16px;background:#f7f9fc;
+   border-bottom:1px solid #e8ebf2;font-weight:700;font-size:.98rem;color:#243043}
+ .ds-card-h i{color:#0f6cbd}
+ .ds-card-b{padding:16px}
+ .ds-groups{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:12px}
+ .ds-acc{border:1.5px solid #c7d0e0;border-inline-start:4px solid #0f6cbd;border-radius:10px;
+   padding:12px 14px;background:#fbfcfe;box-shadow:0 1px 6px rgba(20,40,80,.06)}
+ .ds-acc-top{display:flex;align-items:center;gap:8px;margin-bottom:6px}
+ .ds-acc-top .nm{font-weight:700;color:#243043}
+ .ds-acc .em{font-size:.8rem;color:#0f6cbd;direction:ltr;text-align:right}
+ .ds-cnt{margin-inline-start:auto;background:#0f6cbd;color:#fff;font-size:.72rem;font-weight:700;
+   padding:2px 9px;border-radius:20px}
+ .ds-depts{display:flex;flex-wrap:wrap;gap:5px;margin:8px 0}
+ .ds-depts .dep{background:#eef2f9;color:#334;border:1px solid #dbe2ee;border-radius:6px;
+   padding:1px 8px;font-size:.74rem}
+ .ds-acc-btns{display:flex;gap:6px;margin-top:8px}
+ .ds-mini{border:1px solid #cfd8e6;background:#fff;color:#0f6cbd;border-radius:6px;padding:4px 12px;
+   font-size:.8rem;font-weight:600;text-decoration:none}
+ .ds-mini:hover{background:#eef4fb}
+ .ds-mini.dark{color:#243043}
+ .ds-btn{background:#0f6cbd;border:none;color:#fff;padding:9px 16px;border-radius:8px;
+   font-size:.88rem;font-weight:600;cursor:pointer}
+ .ds-btn:hover{background:#115ea3}
+ .ds-btn-o{background:#fff;border:1px solid #0f6cbd;color:#0f6cbd;padding:9px 16px;border-radius:8px;
+   font-size:.88rem;font-weight:600;cursor:pointer}
+ .ds-btn-o:hover{background:#eef4fb}
+ .ds-dep-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px}
+ .ds-dep-row{display:flex;align-items:center;gap:8px}
+ .ds-dep-row .lbl{min-width:100px;font-size:.82rem;color:#243043;font-weight:600}
+ .ds-sel{border:1px solid #d5dae4;border-radius:7px;padding:6px 9px;font-size:.85rem;
+   background:#fcfdff;outline:none;width:100%}
+ .ds-sel:focus{border-color:#0f6cbd;box-shadow:0 0 0 3px rgba(15,108,189,.1)}
+ .ds-toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px;
+   background:#f7f9fc;border:1px solid #e8ebf2;border-radius:9px;margin-bottom:10px}
+ .ds-search{border:1px solid #d5dae4;border-radius:7px;padding:7px 11px;font-size:.85rem;
+   background:#fff;outline:none;min-width:220px;flex:1}
+ .ds-search:focus{border-color:#0f6cbd;box-shadow:0 0 0 3px rgba(15,108,189,.1)}
+ .ds-table{width:100%;border-collapse:collapse;font-size:.85rem}
+ .ds-table th{position:sticky;top:0;background:#eef2f9;color:#334;font-size:.76rem;font-weight:700;
+   padding:8px 10px;text-align:start;white-space:nowrap;z-index:1}
+ .ds-table td{padding:7px 10px;border-bottom:1px solid #eef1f6;vertical-align:middle}
+ .ds-table tr:hover td{background:#f9fbff}
+ .ds-warn{background:#fff7ea;border:1px solid #f0d59a;border-radius:9px;padding:10px 14px;
+   font-size:.83rem;color:#8a5a00;margin-bottom:16px}
+</style>
+<div class="ds-wrap">
+ <div class="d-flex align-items-center">
+  <div>
+   <div class="ds-head"><i class="bi bi-diagram-3-fill"></i><h2>توزيع الموظفين على الحسابات</h2></div>
+   <div class="ds-sub">كل حساب مرسِل يصبح مسؤولاً عن مجموعته — ولا يُرسل لغيرها.</div>
+  </div>
+  <a class="ds-mini dark ms-auto" href="{{ url_for('distribution_clear') }}"
+     onclick="return confirm('إلغاء كل التوزيع؟')" style="color:#c0392b;border-color:#e0b3b6">
+   <i class="bi bi-x-circle"></i> إلغاء التوزيع</a>
+ </div>
+
+ {% if unassigned %}
+ <div class="ds-warn"><i class="bi bi-exclamation-triangle"></i> {{ unassigned }} موظفاً بلا حساب مسؤول —
+  سيُرسَل لهم من أي حساب متاح.</div>
+ {% endif %}
+
+ <div class="ds-card">
+  <div class="ds-card-h"><i class="bi bi-people-fill"></i> مجموعات الحسابات الرئيسية</div>
+  <div class="ds-card-b">
+   <div class="ds-groups">
+   {% for g in groups %}
+    <div class="ds-acc">
+     <div class="ds-acc-top">
+      <span class="status-dot {{ 'on' if g.acc.active else 'off' }}"></span>
+      <span class="nm text-truncate">{{ g.acc.display_name or g.acc.email }}</span>
+      <span class="ds-cnt">{{ g.count }} موظف</span>
+     </div>
+     <div class="em">{{ g.acc.email }}</div>
+     <div class="ds-depts">
+      {% for d in g.depts %}<span class="dep">{{ d.department }} ({{ d.c }})</span>
+      {% else %}<span class="text-muted small">لا يوجد موظفون مرتبطون</span>{% endfor %}
+     </div>
+     <div class="ds-acc-btns">
+      <a class="ds-mini" href="{{ url_for('mail_view', kind='account', oid=g.acc.id) }}">
+       <i class="bi bi-envelope"></i> بريده</a>
+      <a class="ds-mini dark" href="{{ url_for('campaigns') }}?scope={{ g.acc.id }}">
+       <i class="bi bi-megaphone"></i> حملة لمجموعته</a>
+     </div>
+    </div>
+   {% else %}
+    <div class="alert alert-warning mb-0">أضف حسابات مرسِلة أولاً.</div>
+   {% endfor %}
+   </div>
+  </div>
+ </div>
+
+ <div class="ds-card">
+  <div class="ds-card-h"><i class="bi bi-magic"></i> توزيع تلقائي</div>
+  <div class="ds-card-b">
+   <div class="d-flex gap-2 flex-wrap">
+    <form method="POST" action="{{ url_for('distribution_auto') }}">
+     <input type="hidden" name="mode" value="equal">
+     <button class="ds-btn"><i class="bi bi-distribute-horizontal"></i> بالتساوي على الحسابات النشطة</button>
+    </form>
+    <form method="POST" action="{{ url_for('distribution_auto') }}">
+     <input type="hidden" name="mode" value="department">
+     <button class="ds-btn-o"><i class="bi bi-diagram-3"></i> أقساماً كاملة (كل قسم لحساب واحد)</button>
+    </form>
+   </div>
+   <p class="small text-muted mt-2 mb-0">مثال: 250 موظفاً و5 حسابات → 50 موظفاً لكل حساب.</p>
+  </div>
+ </div>
+
+ <form method="POST" action="{{ url_for('distribution_departments') }}" class="ds-card">
+  <div class="ds-card-h"><i class="bi bi-link-45deg"></i> ربط الأقسام بالحسابات</div>
+  <div class="ds-card-b">
+   <div class="ds-dep-grid">
+   {% for d in departments %}
+    <div class="ds-dep-row">
+     <span class="lbl">{{ d or '(بدون قسم)' }}</span>
+     <select name="deptacc::{{ d }}" class="ds-sel">
+      <option value="">— بدون —</option>
+      {% for a in accs %}<option value="{{ a.id }}"
+        {{ 'selected' if dept_owner.get(d)==a.id }}>{{ a.display_name or a.email }}</option>{% endfor %}
+     </select>
+    </div>
+   {% else %}<div class="text-muted small">لا توجد أقسام.</div>{% endfor %}
+   </div>
+   <button class="ds-btn mt-3"><i class="bi bi-save"></i> حفظ ربط الأقسام</button>
+  </div>
+ </form>
+
+ <form method="POST" action="{{ url_for('distribution_assign') }}" id="bulkform"></form>
+
+ <form method="POST" action="{{ url_for('distribution_save') }}" class="ds-card">
+  <div class="ds-card-h"><i class="bi bi-person-lines-fill"></i> اختر موظفين واربطهم بحساب رئيسي
+   <button class="ds-btn-o ms-auto" style="padding:5px 12px;font-size:.8rem">
+    <i class="bi bi-save"></i> حفظ القوائم المنسدلة</button></div>
+  <div class="ds-card-b">
+   <div class="ds-toolbar">
+    <label class="d-flex align-items-center gap-2 mb-0" style="cursor:pointer">
+     <input class="form-check-input m-0" type="checkbox" onclick="dsAll(this)">
+     <span class="small">تحديد الكل</span></label>
+    <input class="ds-search" id="dsq" placeholder="ابحث بالاسم أو البريد أو القسم" oninput="dsFilter()">
+    <button class="ds-btn-o" style="padding:6px 12px;font-size:.8rem" type="button" onclick="dsAll(true)">حدّد الظاهر</button>
+    <span class="d-flex align-items-center gap-2 ms-auto">
+     <span class="small fw-bold">اربط المحدَّدين بـ:</span>
+     <select name="account_id" form="bulkform" class="ds-sel" style="width:auto">
+      <option value="">— بدون حساب —</option>
+      {% for a in accs %}<option value="{{ a.id }}">{{ a.display_name or a.email }}</option>{% endfor %}
+     </select>
+     <button class="ds-btn" style="padding:6px 14px;font-size:.82rem" form="bulkform" type="submit">
+      <i class="bi bi-link-45deg"></i> اربط (<span id="dscount">0</span>)</button>
+    </span>
+   </div>
+
+   <div style="max-height:520px;overflow:auto;border:1px solid #e8ebf2;border-radius:9px">
+   <table class="ds-table" id="dstable">
+    <thead><tr><th style="width:34px"></th><th>الموظف</th><th>القسم</th><th>الحساب المسؤول</th></tr></thead>
+    <tbody>
+    {% for e in emps %}
+     <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ (e.department or ''))|lower }}">
+      <td><input class="form-check-input m-0 dschk" form="bulkform" type="checkbox"
+                 name="eid" value="{{ e.id }}" onchange="dsCount()"></td>
+      <td class="fw-semibold">{{ e.name }}<div class="small text-muted" dir="ltr">{{ e.email }}</div></td>
+      <td class="small">{{ e.department or '—' }}</td>
+      <td><select name="own::{{ e.id }}" class="ds-sel">
+        <option value="">— بدون —</option>
+        {% for a in accs %}<option value="{{ a.id }}"
+          {{ 'selected' if e.owner_account_id==a.id }}>{{ a.display_name or a.email }}</option>{% endfor %}
+       </select></td>
+     </tr>
+    {% else %}<tr><td colspan="4" class="text-muted p-3">لا يوجد موظفون</td></tr>{% endfor %}
+    </tbody>
+   </table>
+   </div>
+   <p class="small text-muted mt-2 mb-0">الموظف المرتبط بحساب: يستلم رسائل الحملات من هذا
+    الحساب وحده، ويرد عليه هو تلقائياً في الرد العكسي.</p>
+  </div>
+ </form>
 </div>
-
-<div class="row g-3 mb-3">
-{% for g in groups %}
- <div class="col-12 col-md-6 col-xl-4">
-  <div class="card h-100"><div class="card-body">
-   <div class="d-flex align-items-center gap-2">
-    <span class="status-dot {{ 'on' if g.acc.active else 'off' }}"></span>
-    <strong class="text-truncate">{{ g.acc.display_name or g.acc.email }}</strong>
-    <span class="badge bg-primary ms-auto">{{ g.count }} موظف</span>
-   </div>
-   <div class="small text-muted mb-2">{{ g.acc.email }}</div>
-   <div class="small">
-    {% for d in g.depts %}<span class="badge bg-light text-dark border me-1">
-     {{ d.department }} ({{ d.c }})</span>{% else %}
-     <span class="text-muted">لا يوجد موظفون مرتبطون</span>{% endfor %}
-   </div>
-   <div class="mt-3 d-flex gap-2">
-    <a class="btn btn-sm btn-outline-primary"
-       href="{{ url_for('mail_view', kind='account', oid=g.acc.id) }}">بريده</a>
-    <a class="btn btn-sm btn-outline-dark"
-       href="{{ url_for('campaigns') }}?scope={{ g.acc.id }}">حملة لمجموعته</a>
-   </div>
-  </div></div>
- </div>
-{% else %}
- <div class="col-12"><div class="alert alert-warning">أضف حسابات مرسِلة أولاً.</div></div>
-{% endfor %}
-</div>
-
-{% if unassigned %}
-<div class="alert alert-warning py-2">
- <i class="bi bi-exclamation-triangle"></i> {{ unassigned }} موظفاً بلا حساب مسؤول —
- سيُرسَل لهم من أي حساب متاح.</div>
-{% endif %}
-
-<div class="card mb-3"><div class="card-body">
- <h5 class="mb-3">توزيع تلقائي</h5>
- <div class="d-flex gap-2 flex-wrap">
-  <form method="POST" action="{{ url_for('distribution_auto') }}">
-   <input type="hidden" name="mode" value="equal">
-   <button class="btn btn-primary"><i class="bi bi-distribute-horizontal"></i>
-    بالتساوي على الحسابات النشطة</button>
-  </form>
-  <form method="POST" action="{{ url_for('distribution_auto') }}">
-   <input type="hidden" name="mode" value="department">
-   <button class="btn btn-outline-primary"><i class="bi bi-diagram-3"></i>
-    أقساماً كاملة (كل قسم لحساب واحد)</button>
-  </form>
- </div>
- <p class="small text-muted mt-2 mb-0">مثال: 250 موظفاً و5 حسابات → 50 موظفاً لكل حساب.</p>
-</div></div>
-
-<form method="POST" action="{{ url_for('distribution_departments') }}" class="card mb-3">
- <div class="card-body">
-  <h5 class="mb-3">ربط الأقسام بالحسابات</h5>
-  <div class="row g-2">
-  {% for d in departments %}
-   <div class="col-12 col-md-6 col-xl-4 d-flex align-items-center gap-2">
-    <span class="small flex-shrink-0" style="min-width:110px">{{ d or '(بدون قسم)' }}</span>
-    <select name="deptacc::{{ d }}" class="form-select form-select-sm">
-     <option value="">— بدون —</option>
-     {% for a in accs %}<option value="{{ a.id }}"
-       {{ 'selected' if dept_owner.get(d)==a.id }}>{{ a.display_name or a.email }}</option>{% endfor %}
-    </select>
-   </div>
-  {% else %}<div class="col-12 text-muted small">لا توجد أقسام.</div>{% endfor %}
-  </div>
-  <button class="btn btn-primary mt-3"><i class="bi bi-save"></i> حفظ ربط الأقسام</button>
- </div>
-</form>
-
-<form method="POST" action="{{ url_for('distribution_assign') }}" id="bulkform"></form>
-
-<form method="POST" action="{{ url_for('distribution_save') }}" class="card">
- <div class="card-body">
-  <div class="d-flex align-items-center gap-2 mb-3 flex-wrap">
-   <h5 class="mb-0">اختر موظفين واربطهم بحساب رئيسي</h5>
-   <button class="btn btn-outline-primary btn-sm ms-auto">
-    <i class="bi bi-save"></i> حفظ القوائم المنسدلة</button>
-  </div>
-
-  <div class="ol-bar rounded mb-2">
-   <input class="form-check-input m-0" type="checkbox" onclick="dsAll(this)" title="تحديد الكل">
-   <span class="small text-muted">تحديد الكل</span>
-   <input class="form-control form-control-sm" id="dsq" style="max-width:230px"
-          placeholder="ابحث بالاسم أو البريد أو القسم" oninput="dsFilter()">
-   <button class="btn btn-sm btn-outline-secondary" type="button" onclick="dsAll(true)">
-    حدّد الظاهر</button>
-   <span class="ms-auto d-flex align-items-center gap-2">
-    <span class="small fw-bold">اربط المحدَّدين بـ:</span>
-    <select name="account_id" form="bulkform" class="form-select form-select-sm" style="width:auto">
-     <option value="">— بدون حساب —</option>
-     {% for a in accs %}<option value="{{ a.id }}">{{ a.display_name or a.email }}</option>{% endfor %}
-    </select>
-    <button class="btn btn-sm btn-primary" form="bulkform" type="submit">
-     <i class="bi bi-link-45deg"></i> اربط (<span id="dscount">0</span>)</button>
-   </span>
-  </div>
-
-  <div class="table-wrap" style="max-height:520px;overflow:auto">
-  <table class="table table-sm align-middle" id="dstable">
-   <thead><tr><th style="width:34px"></th><th>الموظف</th><th>القسم</th>
-     <th>الحساب المسؤول</th></tr></thead>
-   <tbody>
-   {% for e in emps %}
-    <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ (e.department or ''))|lower }}">
-     <td><input class="form-check-input m-0 dschk" form="bulkform" type="checkbox"
-                name="eid" value="{{ e.id }}" onchange="dsCount()"></td>
-     <td class="fw-semibold">{{ e.name }}<div class="small text-muted">{{ e.email }}</div></td>
-     <td class="small">{{ e.department or '—' }}</td>
-     <td><select name="own::{{ e.id }}" class="form-select form-select-sm">
-       <option value="">— بدون —</option>
-       {% for a in accs %}<option value="{{ a.id }}"
-         {{ 'selected' if e.owner_account_id==a.id }}>{{ a.display_name or a.email }}</option>{% endfor %}
-      </select></td>
-    </tr>
-   {% else %}<tr><td colspan="4" class="mlist-empty">لا يوجد موظفون</td></tr>{% endfor %}
-   </tbody>
-  </table>
-  </div>
-  <p class="small text-muted mt-2 mb-0">الموظف المرتبط بحساب: يستلم رسائل الحملات من هذا
-   الحساب وحده، ويرد عليه هو تلقائياً في الرد العكسي.</p>
- </div>
-</form>
 
 <script>
 function dsRows(){return Array.prototype.slice.call(
@@ -5470,6 +5683,12 @@ DOMAINS_TPL = """
     </div></div>
    <div class="mb-2"><label>الاسم الظاهر (اختياري)</label>
     <input name="display_name" class="form-control" placeholder="أحمد محمد"></div>
+   <div class="row">
+    <div class="col-6 mb-2"><label>رقم الإقامة (اختياري)</label>
+     <input name="iqama" class="form-control" dir="ltr" placeholder="2xxxxxxxxx"></div>
+    <div class="col-6 mb-2"><label>الرقم الوظيفي (اختياري)</label>
+     <input name="emp_number" class="form-control" dir="ltr" placeholder="EMP-001"></div>
+   </div>
    <div class="mb-2"><label>النوع</label>
     <select name="role" class="form-select role-sel" data-dom="{{ d.id }}">
      <option value="sub">فرعي → يروح «الموظفون»</option>
@@ -6024,9 +6243,11 @@ def mailbox_add(did):
                 ("%@" + dom["name"],)).fetchone()
             owner_id = m["id"] if m else None
         conn.execute(
-            """INSERT INTO employees (name, email, signature, logo, password, owner_account_id)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            (display_name or local, email, signature, logo, enc_pw, owner_id))
+            """INSERT INTO employees (name, email, signature, logo, password, owner_account_id,
+               iqama, emp_number)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (display_name or local, email, signature, logo, enc_pw, owner_id,
+             f.get("iqama", "").strip(), f.get("emp_number", "").strip()))
         conn.commit()
         conn.close()
         if owner_id:
@@ -6478,12 +6699,14 @@ def add_employee():
     signature = f.get("signature", "").strip()
     try:
         conn = get_connection()
-        conn.execute("""INSERT INTO employees (name, email, title, department, phone, password, signature)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        conn.execute("""INSERT INTO employees (name, email, title, department, phone, password,
+                        signature, iqama, emp_number)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                      (f["name"].strip(), f["email"].strip().lower(),
                       f.get("title", "").strip(), f.get("department", "").strip(),
                       f.get("phone", "").strip(),
-                      encrypt_secret(pw), signature))
+                      encrypt_secret(pw), signature,
+                      f.get("iqama", "").strip(), f.get("emp_number", "").strip()))
         conn.commit()
         conn.close()
         flash("تمت إضافة الموظف", "success")
@@ -6499,18 +6722,20 @@ def edit_employee(eid):
     signature = f.get("signature", "").strip()
     try:
         conn = get_connection()
+        iqama = f.get("iqama", "").strip()
+        emp_number = f.get("emp_number", "").strip()
         if signature:   # التوقيع لا يُمسح أبداً — يُحدَّث فقط لو أُدخلت قيمة جديدة
             conn.execute("""UPDATE employees SET name=?, email=?, title=?, department=?,
-                            phone=?, signature=? WHERE id=?""",
+                            phone=?, iqama=?, emp_number=?, signature=? WHERE id=?""",
                          (f["name"].strip(), f["email"].strip().lower(),
                           f.get("title", "").strip(), f.get("department", "").strip(),
-                          f.get("phone", "").strip(), signature, eid))
+                          f.get("phone", "").strip(), iqama, emp_number, signature, eid))
         else:
             conn.execute("""UPDATE employees SET name=?, email=?, title=?, department=?,
-                            phone=? WHERE id=?""",
+                            phone=?, iqama=?, emp_number=? WHERE id=?""",
                          (f["name"].strip(), f["email"].strip().lower(),
                           f.get("title", "").strip(), f.get("department", "").strip(),
-                          f.get("phone", "").strip(), eid))
+                          f.get("phone", "").strip(), iqama, emp_number, eid))
         if pw:   # حدّث كلمة المرور فقط لو أُدخلت
             conn.execute("UPDATE employees SET password=? WHERE id=?",
                          (encrypt_secret(pw), eid))
@@ -6546,6 +6771,8 @@ def import_employees():
         department = cells[3] if len(cells) > 3 else ""
         phone = cells[4] if len(cells) > 4 else ""
         pw = cells[5] if len(cells) > 5 else ""
+        iqama = cells[6] if len(cells) > 6 else ""
+        emp_number = cells[7] if len(cells) > 7 else ""
         if i == 0 and "@" not in email:          # صف عنوان
             continue
         if not name or "@" not in email:
@@ -6554,15 +6781,17 @@ def import_employees():
         enc_pw = encrypt_secret(pw) if pw else None
         exists = cur.execute("SELECT 1 FROM employees WHERE email=?", (email,)).fetchone()
         if exists:
-            cur.execute("""UPDATE employees SET name=?, title=?, department=?, phone=?
-                           WHERE email=?""", (name, title, department, phone, email))
+            cur.execute("""UPDATE employees SET name=?, title=?, department=?, phone=?,
+                           iqama=?, emp_number=? WHERE email=?""",
+                        (name, title, department, phone, iqama, emp_number, email))
             if enc_pw:
                 cur.execute("UPDATE employees SET password=? WHERE email=?", (enc_pw, email))
             updated += 1
         else:
-            cur.execute("""INSERT INTO employees (name, email, title, department, phone, password)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (name, email, title, department, phone, enc_pw or ""))
+            cur.execute("""INSERT INTO employees (name, email, title, department, phone, password,
+                           iqama, emp_number) VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                        (name, email, title, department, phone,
+                         enc_pw or encrypt_secret(DEFAULT_MAILBOX_PASS), iqama, emp_number))
             added += 1
     conn.commit()
     conn.close()
@@ -6573,14 +6802,15 @@ def import_employees():
 @app.route("/employees/export")
 def export_employees():
     conn = get_connection()
-    rows = conn.execute("""SELECT name, email, title, department, phone, active
+    rows = conn.execute("""SELECT name, email, title, department, phone, iqama, emp_number, active
                            FROM employees ORDER BY name""").fetchall()
     conn.close()
     buf = io.StringIO()
     w = csv.writer(buf)
-    w.writerow(["name", "email", "title", "department", "phone", "active"])
+    w.writerow(["name", "email", "title", "department", "phone", "password", "iqama", "emp_number"])
     for r in rows:
-        w.writerow([r["name"], r["email"], r["title"], r["department"], r["phone"], r["active"]])
+        w.writerow([r["name"], r["email"], r["title"], r["department"], r["phone"], "",
+                    r["iqama"], r["emp_number"]])
     return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
                     headers={"Content-Disposition": "attachment; filename=employees.csv"})
 
@@ -6846,9 +7076,29 @@ def templates_page():
     conn = get_connection()
     mains = conn.execute(
         "SELECT id, email, display_name, signature, logo FROM accounts ORDER BY email").fetchall()
+    emps = conn.execute("""SELECT e.id, e.name, e.email, e.signature, e.iqama, e.emp_number,
+                                  a.email AS owner_email, a.display_name AS owner_name
+                           FROM employees e LEFT JOIN accounts a ON a.id = e.owner_account_id
+                           ORDER BY a.email, e.email""").fetchall()
     conn.close()
-    return render("templates.html", "توقيع الموظفين", mains=mains,
+    return render("templates.html", "توقيع الموظفين", mains=mains, emps=emps,
                   signature_template=get_setting("signature_template", ""))
+
+
+@app.route("/templates/employee-signature/<int:eid>", methods=["POST"])
+def save_employee_signature(eid):
+    """توقيع خاص لموظف واحد — يتغلّب على توقيع حسابه الرئيسي."""
+    sig = request.form.get("signature", "").strip()
+    conn = get_connection()
+    if not conn.execute("SELECT 1 FROM employees WHERE id=?", (eid,)).fetchone():
+        conn.close()
+        abort(404)
+    conn.execute("UPDATE employees SET signature=? WHERE id=?", (sig, eid))
+    conn.commit()
+    conn.close()
+    flash("تم حفظ توقيع الموظف" if sig else "تم مسح التوقيع الخاص — الموظف يرث توقيع حسابه الرئيسي",
+          "success")
+    return redirect(url_for("templates_page") + "#emps")
 
 
 # ------------------------------------------------------------------ قوالب رسائل الحملات
@@ -6938,7 +7188,11 @@ def campaigns():
                (SELECT COUNT(*) FROM campaign_recipients r WHERE r.campaign_id=c.id) AS total,
                (SELECT COUNT(*) FROM campaign_recipients r WHERE r.campaign_id=c.id AND r.status='sent') AS sent,
                (SELECT COUNT(*) FROM campaign_recipients r WHERE r.campaign_id=c.id AND r.status='failed') AS failed,
-               (SELECT COUNT(*) FROM campaign_dept_templates dt WHERE dt.campaign_id=c.id) AS dept_count
+               (SELECT COUNT(*) FROM campaign_dept_templates dt WHERE dt.campaign_id=c.id) AS dept_count,
+               (SELECT MAX(r.sent_at) FROM campaign_recipients r
+                  WHERE r.campaign_id=c.id AND r.status='sent') AS last_sent,
+               (SELECT MAX(er.replied_at) FROM emp_replies er WHERE er.employee_id IN
+                  (SELECT r.employee_id FROM campaign_recipients r WHERE r.campaign_id=c.id)) AS last_reply
         FROM campaigns c JOIN templates t ON t.id=c.template_id
         ORDER BY c.id DESC
     """).fetchall()
@@ -7204,6 +7458,12 @@ def reverse_page():
     queue = conn.execute("""SELECT q.*, e.name, e.email AS emp_email FROM reverse_queue q
                             JOIN employees e ON e.id=q.employee_id
                             WHERE q.status='pending' ORDER BY q.due_at ASC LIMIT 40""").fetchall()
+    emps = conn.execute("""SELECT e.id, e.name, e.email, e.department, e.emp_connected,
+                                  (e.password != '') AS has_pw, e.owner_account_id,
+                                  (SELECT COUNT(*) FROM emp_replies er
+                                     WHERE er.employee_id=e.id AND er.status='sent') AS n_replies
+                           FROM employees e WHERE e.active=1
+                           ORDER BY e.email""").fetchall()
     stats = {
         "total": conn.execute("SELECT COUNT(*) c FROM employees").fetchone()["c"],
         "waiting": conn.execute("SELECT COUNT(*) c FROM reverse_queue "
@@ -7216,7 +7476,7 @@ def reverse_page():
     s = {k: get_setting(k, "") for k in _REVERSE_KEYS}
     return render("reverse.html", "الردود التلقائية", s=s, departments=departments,
                   dept_map=dept_map, stats=stats, accs=accs, acc_replies=acc_replies,
-                  queue=queue,
+                  queue=queue, emps=emps,
                   delay_default=REVERSE_DELAY_DEFAULT, scan_default=REVERSE_SCAN_DEFAULT)
 
 
