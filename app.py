@@ -93,6 +93,8 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
+APP_VERSION = "1.0.1"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
 
@@ -2572,6 +2574,11 @@ BASE_TPL = """
  .app-shell.full .olx-fold a i{font-size:1.02rem}
  .app-shell.full .olx-fold .mbx{padding:8px 12px;font-size:.85rem}
  .app-backdrop{display:none}
+ .app-version{position:fixed;bottom:8px;left:10px;z-index:1000;font-size:.72rem;
+   color:#8a94a6;background:rgba(255,255,255,.85);border:1px solid #e2e6ee;
+   border-radius:6px;padding:2px 8px;letter-spacing:.3px;pointer-events:none;
+   box-shadow:0 1px 3px rgba(0,0,0,.06)}
+ .app-shell.full .app-version{display:none}
  .app-main{width:100%;max-width:1520px;margin:0 auto;padding:28px 32px 64px}
  @media(max-width:992px){
    .sidebar{transform:translateX(100%)}
@@ -2935,6 +2942,7 @@ BASE_TPL = """
   {% block content %}{% endblock %}
  </div>
 </div>
+<div class="app-version" title="إصدار البرنامج">v{{ app_version }}</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
 function sbToggle(){document.getElementById('sb').classList.toggle('open');
@@ -4473,6 +4481,8 @@ MAIL_TPL = """
   <span>العناصر: {{ page.total }}</span>
   <span class="sep">|</span>
   <span>غير المقروء: {{ curf.unseen if curf else 0 }}</span>
+  <span class="sep">|</span>
+  <span>الإصدار v{{ app_version }}</span>
  </div>
  <div class="olx-stat-right">
   <span><i class="bi bi-check-circle-fill"></i> كل المجلدات محدّثة</span>
@@ -5615,7 +5625,8 @@ def _auth_guard():
 
 @app.context_processor
 def inject_globals():
-    return {"crypto_ok": HAVE_CRYPTO, "title": "Email Manager", "user": current_user()}
+    return {"crypto_ok": HAVE_CRYPTO, "title": "Email Manager", "user": current_user(),
+            "app_version": APP_VERSION}
 
 
 def render(tpl, title, **kw):
@@ -5813,7 +5824,7 @@ def domains_import():
                                      imap_server, imap_port, security, signature, logo,
                                      internal, verify_ok)
                VALUES (?, ?, ?, ?, ?, ?, ?, 'none', '', '', 1, 1)""",
-            (email, name, encrypt_secret(pw) if pw else "",
+            (email, name, encrypt_secret(pw or DEFAULT_MAILBOX_PASS),
              LOCAL_MAIL_HOST, INT_SMTP_PORT, LOCAL_MAIL_HOST, INT_IMAP_PORT))
         added += 1
 
@@ -5831,7 +5842,7 @@ def domains_import():
         cur.execute(
             """INSERT INTO employees (name, email, signature, logo, password, owner_account_id)
                VALUES (?, ?, '', '', ?, ?)""",
-            (name or local, email, encrypt_secret(pw) if pw else "", owner))
+            (name or local, email, encrypt_secret(pw or DEFAULT_MAILBOX_PASS), owner))
         added += 1
 
     conn.commit()
@@ -5892,8 +5903,8 @@ def mailbox_add(did):
     display_name = f.get("display_name", "").strip()
     signature = f.get("signature", "").strip()
     logo = _logo_data_uri(request.files.get("logo"))
-    pw = f.get("password", "")
-    enc_pw = encrypt_secret(pw) if pw else ""
+    pw = f.get("password", "") or DEFAULT_MAILBOX_PASS   # افتراضية 022001 لو فاضية
+    enc_pw = encrypt_secret(pw)
     role = "main" if f.get("role") == "main" else "sub"
 
     # تحقّق مبكر من التكرار عبر الجدولين
@@ -6376,7 +6387,7 @@ def employees():
 @app.route("/employees/add", methods=["POST"])
 def add_employee():
     f = request.form
-    pw = f.get("password", "")
+    pw = f.get("password", "") or DEFAULT_MAILBOX_PASS   # افتراضية 022001 لو فاضية
     # التوقيع اختياري: لو فاضي، الموظف بياخد توقيع الحساب الرئيسي تلقائياً
     signature = f.get("signature", "").strip()
     try:
@@ -6386,7 +6397,7 @@ def add_employee():
                      (f["name"].strip(), f["email"].strip().lower(),
                       f.get("title", "").strip(), f.get("department", "").strip(),
                       f.get("phone", "").strip(),
-                      encrypt_secret(pw) if pw else "", signature))
+                      encrypt_secret(pw), signature))
         conn.commit()
         conn.close()
         flash("تمت إضافة الموظف", "success")
@@ -7181,8 +7192,17 @@ def _mail_owner(kind, oid):
                                "title": row["display_name"] or row["email"]}
         if kind == "employee":
             row = conn.execute("SELECT * FROM employees WHERE id=?", (oid,)).fetchone()
-            if not row or not (row["password"] or "").strip():
+            if not row:
                 return None, None
+            if not (row["password"] or "").strip():
+                # موظف داخلي بدون كلمة مرور — اضبط الافتراضية عشان يفتح صندوقه
+                if _email_domain_internal(conn, row["email"]):
+                    conn.execute("UPDATE employees SET password=? WHERE id=?",
+                                 (encrypt_secret(DEFAULT_MAILBOX_PASS), oid))
+                    conn.commit()
+                    row = conn.execute("SELECT * FROM employees WHERE id=?", (oid,)).fetchone()
+                else:
+                    return None, None
             return _emp_account(row), {"kind": "employee", "id": oid, "email": row["email"],
                                        "title": row["name"]}
     finally:

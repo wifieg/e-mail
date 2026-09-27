@@ -38,3 +38,8 @@ __pycache__/
 *.pyo
 .venv/
 venv/
+
+# صور Docker المصدّرة
+*.tar
+*.tar.gz
+*.zip
