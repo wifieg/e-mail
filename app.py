@@ -93,7 +93,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.2"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.0.3"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -2463,9 +2463,11 @@ def scheduler_loop():
             s = conn.execute("SELECT * FROM schedule_settings WHERE id = 1").fetchone()
             conn.close()
             # بوابة وقت الإرسال المجدول: لو الموعد في المستقبل استنّى، ولو قديم/حان أرسِل.
+            # تحديد موعد إرسال = تفعيل تلقائي للإرسال (حتى لو خيار الجدولة مقفول).
             sched = _scheduled_send_dt()
             time_ok = (sched is None) or (datetime.now() >= sched)
-            if s and s["enabled"] and time_ok:
+            auto_on = bool(s and s["enabled"]) or (sched is not None)
+            if s and auto_on and time_ok:
                 interval = max(1, int(s["interval_minutes"]))
                 due = True
                 if s["last_run"]:
