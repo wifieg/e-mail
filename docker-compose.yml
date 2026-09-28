@@ -1,29 +1,50 @@
-# Email Manager — تشغيل جاهز
+# Email Manager — تشغيل جاهز (مع PostgreSQL)
 # التشغيل:  docker compose up -d --build
 # افتح المتصفح على:  http://localhost:8000   (المدير الافتراضي: admin / admin)
 services:
+  db:
+    image: postgres:16
+    container_name: email-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: emailmanager
+      POSTGRES_USER: emailmgr
+      POSTGRES_PASSWORD: "EmailMgr#2026"
+      TZ: "Asia/Riyadh"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U emailmgr -d emailmanager"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   email-manager:
     build: .
     image: email-manager:latest
     container_name: email-manager
     restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
     ports:
       - "8000:8000"     # واجهة الويب
       - "8025:8025"     # SMTP الداخلي المدمج
       - "8143:8143"     # IMAP الداخلي المدمج
     volumes:
-      # قاعدة البيانات + المفاتيح على Docker volume (نظام ملفات أصلي — موثوق وسريع).
-      # البيانات تبقى محفوظة بين عمليات التشغيل ولا تُمسح عند تحديث الصورة.
+      # نحتفظ بـ SQLite القديمة للنقل التلقائي أول مرة (تُقرأ ثم تُهجَر لصالح Postgres).
       - emaildata:/app/data
     environment:
       EM_HOST: "0.0.0.0"
       EM_PORT: "8000"
       EM_NO_BROWSER: "1"
       EM_DB: "/app/data/email_manager.db"
+      # قاعدة البيانات الأساسية = PostgreSQL
+      EM_PG: "postgresql://emailmgr:EmailMgr%232026@db:5432/emailmanager"
       EM_INT_SMTP_PORT: "8025"
       EM_INT_IMAP_PORT: "8143"
-      EM_WAL: "1"       # WAL — أداء وتزامن أفضل على نظام الملفات الأصلي
-      TZ: "Asia/Riyadh" # توقيت السعودية (UTC+3)
+      TZ: "Asia/Riyadh"   # توقيت السعودية (UTC+3)
 
 volumes:
   emaildata:
+  pgdata:

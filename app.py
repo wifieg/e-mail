@@ -78,6 +78,14 @@ DATA_DIR = os.path.join(BASE_DIR, "data")
 os.makedirs(DATA_DIR, exist_ok=True)
 
 DB_NAME = os.environ.get("EM_DB", os.path.join(DATA_DIR, "email_manager.db"))
+# PostgreSQL اختياري: لو EM_PG (DSN) متظبط، البرنامج يشتغل على Postgres — وإلا SQLite.
+PG_DSN = os.environ.get("EM_PG", "").strip()
+USE_PG = bool(PG_DSN)
+psycopg = None
+if USE_PG:
+    import psycopg as _psycopg   # noqa: E402
+    import psycopg.errors        # noqa: E402,F401
+    psycopg = _psycopg
 KEY_FILE = os.path.join(DATA_DIR, "secret.key")
 FLASK_SECRET_FILE = os.path.join(DATA_DIR, "flask_secret")
 LOG_FILE = os.path.join(DATA_DIR, "email_manager.log")
@@ -93,7 +101,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.8"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.0"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -180,9 +188,168 @@ def verify_password(pw: str, stored: str) -> bool:
 
 
 # ------------------------------------------------------------------ قاعدة البيانات
+# ================================================================ طبقة توافق PostgreSQL
+# تخلّي نفس كود SQLite (علامات ? و PRAGMA و INSERT OR IGNORE و lastrowid) يشتغل على Postgres.
+_PG_ID_TABLES = {"accounts", "employees", "reverse_queue", "emp_replies", "templates",
+                 "users", "campaigns", "campaign_recipients", "sent_emails",
+                 "mail_domains", "mail_boxes", "mail_messages"}
+_PG_INS_RE = re.compile(r"^\s*INSERT\s+INTO\s+([a-zA-Z_]+)", re.I)
+_PG_ORIGN_RE = re.compile(r"INSERT\s+OR\s+IGNORE\s+INTO", re.I)
+_PG_TBLINFO_RE = re.compile(r"^\s*PRAGMA\s+table_info\s*\(\s*([a-zA-Z_]+)\s*\)", re.I)
+
+
+class _PgRow:
+    """صف يدعم الوصول بالاسم row['x'] وبالفهرس row[0] و .keys() و dict(row) — زي sqlite3.Row."""
+    __slots__ = ("_c", "_v", "_m")
+    def __init__(self, cols, values):
+        self._c = cols
+        self._v = list(values)
+        self._m = dict(zip(cols, self._v))
+    def __getitem__(self, k):
+        return self._v[k] if isinstance(k, int) else self._m[k]
+    def keys(self):
+        return list(self._c)
+    def get(self, k, d=None):
+        return self._m.get(k, d)
+    def __contains__(self, k):
+        return k in self._m
+    def __iter__(self):
+        return iter(self._v)
+    def __len__(self):
+        return len(self._v)
+
+
+def _pg_rowfactory(cursor):
+    desc = cursor.description
+    cols = [c.name for c in desc] if desc else []
+    def make(values):
+        return _PgRow(cols, values)
+    return make
+
+
+def _pg_translate(sql, has_params=False):
+    """يترجم استعلام SQLite إلى Postgres. تحويل ? و % يتم فقط لو فيه معاملات."""
+    m = _PG_TBLINFO_RE.match(sql)
+    if m:
+        return ("SELECT column_name AS name FROM information_schema.columns "
+                "WHERE table_name = '%s'" % m.group(1).lower())
+    if re.match(r"^\s*PRAGMA\s+user_version\s*=", sql, re.I):
+        return "SELECT NULL WHERE 1=0"      # ضبط النسخة — لا لزوم له في Postgres
+    if re.match(r"^\s*PRAGMA\s+user_version", sql, re.I):
+        return "SELECT 0 AS user_version"   # قراءة — نبدأ من 0 (يشغّل الترحيلات)
+    if re.match(r"^\s*PRAGMA", sql, re.I):
+        return "SELECT NULL AS name WHERE 1=0"
+    q = sql
+    # INSERT OR REPLACE INTO app_settings → ON CONFLICT (key) DO UPDATE
+    if re.search(r"INSERT\s+OR\s+REPLACE\s+INTO\s+app_settings", q, re.I):
+        q = re.sub(r"INSERT\s+OR\s+REPLACE\s+INTO", "INSERT INTO", q, flags=re.I)
+        q = q + " ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value"
+    q = re.sub(r"INTEGER\s+PRIMARY\s+KEY\s+AUTOINCREMENT", "SERIAL PRIMARY KEY", q, flags=re.I)
+    q = re.sub(r"TIMESTAMP\s+DEFAULT\s+CURRENT_TIMESTAMP", "TEXT DEFAULT (now()::text)", q, flags=re.I)
+    q = re.sub(r"\bCURRENT_TIMESTAMP\b", "now()::text", q, flags=re.I)
+    q = re.sub(r"\bTIMESTAMP\b", "TEXT", q)
+    if _PG_ORIGN_RE.search(q):
+        q = _PG_ORIGN_RE.sub("INSERT INTO", q) + " ON CONFLICT DO NOTHING"
+    # psycopg يعالج % و placeholders فقط عند وجود معاملات
+    if has_params:
+        q = q.replace("%", "%%").replace("?", "%s")
+    return q
+
+
+def _pg_needs_returning(sql):
+    if _PG_ORIGN_RE.search(sql) or " RETURNING " in sql.upper():
+        return False
+    m = _PG_INS_RE.match(sql)
+    return bool(m) and m.group(1).lower() in _PG_ID_TABLES
+
+
+class _PgCursor:
+    def __init__(self, raw):
+        self._c = raw
+        self.lastrowid = None
+    def execute(self, sql, params=None):
+        q = _pg_translate(sql, bool(params))
+        ret = _pg_needs_returning(sql)
+        if ret:
+            q = q.rstrip().rstrip(";") + " RETURNING id"
+        try:
+            self._c.execute(q, tuple(params) if params else None)
+        except psycopg.errors.IntegrityError as exc:
+            self._c.connection.rollback()
+            raise sqlite3.IntegrityError(str(exc))
+        except psycopg.Error:
+            try:
+                self._c.connection.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
+        self.lastrowid = None
+        if ret:
+            try:
+                row = self._c.fetchone()
+                self.lastrowid = row[0] if row else None
+            except Exception:  # noqa: BLE001
+                self.lastrowid = None
+        return self
+    def executemany(self, sql, seq):
+        q = _pg_translate(sql, True)
+        self._c.executemany(q, [tuple(p) for p in seq])
+        return self
+    def executescript(self, script):
+        for stmt in script.split(";"):
+            if stmt.strip():
+                self._c.execute(_pg_translate(stmt, False))
+        return self
+    def fetchone(self):
+        return self._c.fetchone()
+    def fetchall(self):
+        return self._c.fetchall()
+    @property
+    def rowcount(self):
+        return self._c.rowcount
+    def close(self):
+        self._c.close()
+
+
+class _PgConn:
+    """غلاف اتصال Postgres يحاكي sqlite3.Connection."""
+    def __init__(self, raw):
+        self._conn = raw
+    def cursor(self):
+        return _PgCursor(self._conn.cursor())
+    def execute(self, sql, params=None):
+        cur = self.cursor()
+        cur.execute(sql, params)
+        return cur
+    def executemany(self, sql, seq):
+        cur = self.cursor()
+        cur.executemany(sql, seq)
+        return cur
+    def executescript(self, script):
+        cur = self.cursor()
+        cur.executescript(script)
+        return cur
+    def commit(self):
+        self._conn.commit()
+    def close(self):
+        try:
+            self._conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def get_connection():
+    if USE_PG:
+        last = None
+        for attempt in range(15):
+            try:
+                raw = psycopg.connect(PG_DSN, row_factory=_pg_rowfactory)
+                return _PgConn(raw)
+            except psycopg.OperationalError as exc:   # السيرفر لسه بيشتغل — أعِد المحاولة
+                last = exc
+                time.sleep(0.6 * (attempt + 1))
+        raise last
     # لا نضبط journal_mode هنا — يُضبط مرة واحدة في init_db.
-    # ضبطه في كل اتصال كان يسبّب "disk I/O error" عبر مشاركة ملفات Docker تحت الضغط.
     last = None
     for attempt in range(5):
         try:
@@ -198,8 +365,9 @@ def get_connection():
 
 
 def _init_journal_mode():
-    """يضبط وضع دفتر اليومية مرة واحدة: DELETE (آمن عبر أي نظام ملفات).
-    EM_WAL=1 يفعّل WAL (للتشغيل المحلي/الـexe على قرص محلي)."""
+    """SQLite فقط: يضبط وضع دفتر اليومية مرة واحدة."""
+    if USE_PG:
+        return
     try:
         conn = sqlite3.connect(DB_NAME, timeout=30)
         conn.execute("PRAGMA journal_mode = %s"
@@ -576,7 +744,66 @@ def init_db():
     cur.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.commit()
     conn.close()
-    log.info("قاعدة البيانات جاهزة: %s", DB_NAME)
+    if USE_PG:
+        _pg_migrate_from_sqlite()
+    log.info("قاعدة البيانات جاهزة: %s", "PostgreSQL" if USE_PG else DB_NAME)
+
+
+def _pg_migrate_from_sqlite():
+    """ينقل بيانات SQLite الموجودة إلى Postgres مرة واحدة (لو Postgres فاضي)."""
+    if not os.path.exists(DB_NAME):
+        return
+    conn = get_connection()
+    try:
+        has = conn.execute("SELECT COUNT(*) AS c FROM accounts").fetchone()["c"]
+        acnt = conn.execute("SELECT COUNT(*) AS c FROM app_settings").fetchone()["c"]
+    except Exception:  # noqa: BLE001
+        conn.close()
+        return
+    # لو فيه بيانات فعلية (غير الإعدادات الافتراضية) نعتبره منقول
+    if has > 0:
+        conn.close()
+        return
+    try:
+        src = sqlite3.connect(DB_NAME, timeout=30)
+        src.row_factory = sqlite3.Row
+    except sqlite3.OperationalError:
+        conn.close()
+        return
+    order = ["accounts", "mail_domains", "employees", "templates", "campaigns",
+             "campaign_dept_templates", "campaign_recipients", "sent_emails",
+             "account_replies", "dept_replies", "reverse_queue", "emp_replies",
+             "mail_messages", "mail_boxes", "users", "app_settings", "schedule_settings"]
+    moved = 0
+    for tbl in order:
+        try:
+            rows = src.execute("SELECT * FROM %s" % tbl).fetchall()
+        except sqlite3.OperationalError:
+            continue
+        if not rows:
+            continue
+        cols = rows[0].keys()
+        collist = ", ".join(cols)
+        ph = ", ".join(["?"] * len(cols))
+        for r in rows:
+            try:
+                conn.execute("INSERT OR IGNORE INTO %s (%s) VALUES (%s)" % (tbl, collist, ph),
+                             tuple(r[c] for c in cols))
+                moved += 1
+            except Exception as exc:  # noqa: BLE001
+                log.warning("نقل %s: تخطّي صف — %s", tbl, exc)
+        conn.commit()
+    src.close()
+    # إعادة ضبط تسلسلات الـ id في Postgres
+    for tbl in _PG_ID_TABLES:
+        try:
+            conn.execute("SELECT setval(pg_get_serial_sequence('%s','id'), "
+                         "COALESCE((SELECT MAX(id) FROM %s), 1))" % (tbl, tbl))
+        except Exception:  # noqa: BLE001
+            pass
+    conn.commit()
+    conn.close()
+    log.info("تم نقل %d صف من SQLite إلى PostgreSQL", moved)
 
 
 def get_setting(key, default=None):
