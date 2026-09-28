@@ -93,7 +93,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.4"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.0.5"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3329,6 +3329,12 @@ TEMPLATES_TPL = """
  .sig-btn:hover{background:#115ea3}
  .sig-file{font-size:.82rem}
  .sig-logo{max-height:34px;border-radius:5px;border:1px solid #e2e6ee;padding:2px;background:#fff}
+ .sig-prev-lbl{font-size:.78rem;font-weight:700;color:#0f6cbd;margin-bottom:5px}
+ .sig-prev-lbl i{margin-inline-end:4px}
+ .sig-prev{border:1px dashed #cbd5e6;border-radius:8px;background:#fff;padding:12px 14px;
+   min-height:110px;font-family:'Segoe UI',Tahoma,Arial,sans-serif;font-size:.86rem;
+   color:#242424;line-height:1.7;white-space:pre-wrap;overflow-wrap:anywhere}
+ .sig-prev-logo{max-height:80px;margin-top:8px;border-radius:6px}
 </style>
 <div class="sig-wrap">
  <div class="sig-head"><i class="bi bi-pen-fill"></i><h2>توقيع الموظفين</h2></div>
@@ -3360,9 +3366,19 @@ TEMPLATES_TPL = """
      {% if m.logo %}<img src="{{ m.logo }}" class="sig-logo ms-auto" alt="logo">{% endif %}
     </div>
     <form method="POST" action="{{ url_for('save_account_signature', aid=m.id) }}" enctype="multipart/form-data">
-     <textarea name="signature" class="sig-ta mb-2" rows="4"
-       placeholder="Thanks &amp; Best Regards,&#10;{name}&#10;{title} | {department}&#10;Email: {email}&#10;Phone: {phone}">{{ m.signature }}</textarea>
-     <div class="row g-2 align-items-center">
+     <div class="row g-3">
+      <div class="col-md-6">
+       <textarea name="signature" class="sig-ta" id="sigin{{ m.id }}" rows="6"
+         data-email="{{ m.email }}" oninput="sigPrev({{ m.id }})"
+         placeholder="Thanks &amp; Best Regards,&#10;{name}&#10;{title} | {department}&#10;Email: {email}&#10;Phone: {phone}">{{ m.signature }}</textarea>
+      </div>
+      <div class="col-md-6">
+       <div class="sig-prev-lbl"><i class="bi bi-eye"></i> معاينة التوقيع</div>
+       <div class="sig-prev" id="sigprev{{ m.id }}"></div>
+       {% if m.logo %}<img src="{{ m.logo }}" class="sig-prev-logo" alt="logo">{% endif %}
+      </div>
+     </div>
+     <div class="row g-2 align-items-center mt-1">
       <div class="col-md-7"><label class="small text-muted mb-1">لوجو / صورة (أقصى 600KB)</label>
        <input name="logo" type="file" accept="image/*" class="form-control form-control-sm sig-file"></div>
       <div class="col-md-5 text-md-end pt-2">
@@ -3414,6 +3430,24 @@ function empSigFilter(){
   r.style.display = (!q || (r.dataset.s||'').indexOf(q)!==-1) ? '' : 'none';
  });
 }
+function _esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+function sigPrev(id){
+ var ta=document.getElementById('sigin'+id), box=document.getElementById('sigprev'+id);
+ if(!ta||!box) return;
+ var txt=ta.value||ta.getAttribute('placeholder')||'';
+ var sample={'{name}':'محمد أحمد','{first_name}':'محمد','{title}':'محاسب أول',
+   '{department}':'المالية','{phone}':'+966 55 000 0000','{email}':(ta.dataset.email||'name@domain.sa')};
+ txt=_esc(txt);
+ for(var k in sample){ txt=txt.split(k).join('<b>'+_esc(sample[k])+'</b>'); }
+ // احذف الأسطر الفاضية زي ما البرنامج بيعمل
+ txt=txt.split('\\n').filter(function(l){return l.trim()!=='';}).join('<br>');
+ box.innerHTML=txt||'<span style="color:#9aa4b2">— التوقيع فاضي —</span>';
+}
+document.addEventListener('DOMContentLoaded',function(){
+ document.querySelectorAll('textarea[id^=sigin]').forEach(function(ta){
+  sigPrev(ta.id.replace('sigin',''));
+ });
+});
 </script>
 {% endblock %}
 """
@@ -3462,13 +3496,8 @@ MSG_TEMPLATES_TPL = """
    <form method="POST" action="{{ url_for('edit_template', tid=t.id) }}">
     <div class="mt-lbl">اسم القالب</div>
     <input name="name" class="mt-inp" value="{{ t.name }}">
-    <div class="mt-lbl">الموضوع</div>
-    <input name="subject" class="mt-inp" value="{{ t.subject }}">
     <div class="mt-lbl">نص الرسالة</div>
-    <textarea name="body" class="mt-inp" rows="3">{{ t.body }}</textarea>
-    <div class="mt-lbl">توقيع احتياطي (اختياري)</div>
-    <textarea name="signature" class="mt-inp" rows="2"
-         placeholder="يُستخدم فقط لو قالب التوقيع العام فارغ">{{ t.signature }}</textarea>
+    <textarea name="body" class="mt-inp" rows="5">{{ t.body }}</textarea>
     <div class="mt-actions">
      <button class="mt-save"><i class="bi bi-check-lg"></i> حفظ</button>
      <a class="mt-del" href="{{ url_for('delete_template', tid=t.id) }}"
@@ -3480,7 +3509,7 @@ MSG_TEMPLATES_TPL = """
  </div>
  <div class="mt-vars">المتغيرات داخل نص الرسالة: <code>{name}</code> <code>{first_name}</code>
   <code>{title}</code> <code>{department}</code> <code>{phone}</code> <code>{email}</code> —
-  التوقيع يُضاف تلقائياً لكل موظف.</div>
+  التوقيع يُضاف تلقائياً حسب الحساب المرسِل، وموضوع الإيميل = اسم القالب.</div>
 </div>
 
 <div class="modal fade" id="add" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
@@ -3488,10 +3517,9 @@ MSG_TEMPLATES_TPL = """
   <div class="modal-header"><h5 class="modal-title">قالب رسالة جديد</h5>
    <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
   <div class="modal-body">
-   <div class="mb-2"><label>الاسم</label><input name="name" class="form-control" required></div>
-   <div class="mb-2"><label>الموضوع</label><input name="subject" class="form-control" required></div>
-   <div class="mb-2"><label>النص</label><textarea name="body" class="form-control" rows="5" required></textarea></div>
-   <div class="mb-2"><label>التوقيع</label><textarea name="signature" class="form-control" rows="3"></textarea></div>
+   <div class="mb-2"><label>اسم القالب</label><input name="name" class="form-control" required></div>
+   <div class="mb-2"><label>نص الرسالة</label><textarea name="body" class="form-control" rows="6" required></textarea></div>
+   <div class="form-text">موضوع الإيميل = اسم القالب، والتوقيع يُضاف تلقائياً حسب الحساب المرسِل.</div>
   </div>
   <div class="modal-footer"><button class="btn btn-primary">حفظ</button></div>
  </form>
@@ -7143,9 +7171,11 @@ def save_account_signature(aid):
 @app.route("/templates/add", methods=["POST"])
 def add_template():
     f = request.form
+    name = f["name"].strip()
+    # موضوع الإيميل = اسم القالب، والتوقيع يُضاف تلقائياً حسب الحساب المرسِل
     conn = get_connection()
-    conn.execute("INSERT INTO templates (name, subject, body, signature) VALUES (?, ?, ?, ?)",
-                 (f["name"].strip(), f["subject"].strip(), f["body"], f.get("signature", "")))
+    conn.execute("INSERT INTO templates (name, subject, body, signature) VALUES (?, ?, ?, '')",
+                 (name, name, f["body"]))
     conn.commit()
     conn.close()
     flash("تم حفظ القالب", "success")
@@ -7155,15 +7185,15 @@ def add_template():
 @app.route("/templates/<int:tid>/edit", methods=["POST"])
 def edit_template(tid):
     f = request.form
+    name = f["name"].strip()
     conn = get_connection()
-    conn.execute("""UPDATE templates SET name=?, subject=?, body=?, signature=?,
+    conn.execute("""UPDATE templates SET name=?, subject=?, body=?,
                     updated_at=CURRENT_TIMESTAMP WHERE id=?""",
-                 (f["name"].strip(), f["subject"].strip(), f["body"],
-                  f.get("signature", ""), tid))
+                 (name, name, f["body"], tid))
     conn.commit()
     conn.close()
     flash("تم تحديث القالب", "success")
-    return redirect(url_for("templates_page"))
+    return redirect(url_for("message_templates_page"))
 
 
 @app.route("/templates/<int:tid>/delete")
