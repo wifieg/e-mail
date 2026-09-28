@@ -93,7 +93,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.7"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.0.8"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3651,6 +3651,8 @@ CAMPAIGNS_TPL = """
    {% else %}<span class="text-muted">—</span>{% endif %}</td>
   <td class="text-nowrap">
    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('campaign_detail', cid=c.id) }}">تفاصيل</a>
+   <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal"
+     data-bs-target="#dt{{ c.id }}"><i class="bi bi-calendar2-week"></i> تعديل التواريخ</button>
    {% if c.status=='active' %}
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('campaign_action', cid=c.id, act='pause') }}">إيقاف</a>
    {% elif c.status=='paused' %}
@@ -3664,6 +3666,30 @@ CAMPAIGNS_TPL = """
  </tbody>
 </table>
 </div>
+
+{% for c in rows %}
+<div class="modal fade" id="dt{{ c.id }}" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+ <form method="POST" action="{{ url_for('campaign_edit_dates', cid=c.id) }}">
+  <div class="modal-header"><h5 class="modal-title">تعديل تواريخ: {{ c.name }}</h5>
+   <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+   <div class="row">
+    <div class="col-6 mb-2"><label><i class="bi bi-calendar-event text-danger"></i> تاريخ الإرسال</label>
+     <input name="send_date" type="date" class="form-control" value="{{ c.send_date }}" required></div>
+    <div class="col-6 mb-2"><label>ساعة الإرسال</label>
+     <input name="send_time" type="time" class="form-control" value="{{ c.send_time or '12:00' }}" required></div>
+    <div class="col-6 mb-2"><label><i class="bi bi-reply-fill text-success"></i> تاريخ التسليم (الرد)</label>
+     <input name="reply_date" type="date" class="form-control" value="{{ c.reply_date }}" required></div>
+    <div class="col-6 mb-2"><label>ساعة التسليم</label>
+     <input name="reply_time" type="time" class="form-control" value="{{ c.reply_time or '12:00' }}" required></div>
+   </div>
+   <div class="alert alert-info py-2 small mb-0"><i class="bi bi-info-circle"></i>
+    التعديل بيأثّر على المستلمين اللي لسه ماتبعتلهمش والردود اللي لسه ماجتش.</div>
+  </div>
+  <div class="modal-footer"><button class="btn btn-primary"><i class="bi bi-save"></i> حفظ التواريخ</button></div>
+ </form>
+</div></div></div>
+{% endfor %}
 <script>
 // تحديث لحظي لجدول الحملات (التقدّم + التواريخ) بدون إعادة تحميل الصفحة
 (function(){
@@ -7425,6 +7451,29 @@ def campaign_action(cid, act):
     conn.commit()
     conn.close()
     return redirect(url_for("campaign_detail", cid=cid))
+
+
+@app.route("/campaigns/<int:cid>/dates", methods=["POST"])
+def campaign_edit_dates(cid):
+    """تعديل تاريخ الإرسال/التسليم لحملة (يفيد الحملات اللي لسه ماتبعتتش)."""
+    f = request.form
+    send_date = (f.get("send_date", "") or "").strip()
+    send_time = (f.get("send_time", "") or "12:00").strip() or "12:00"
+    reply_date = (f.get("reply_date", "") or "").strip()
+    reply_time = (f.get("reply_time", "") or "12:00").strip() or "12:00"
+    if not send_date or not reply_date:
+        flash("لازم تحدّد تاريخ الإرسال وتاريخ التسليم", "error")
+        return redirect(url_for("campaigns"))
+    conn = get_connection()
+    if not conn.execute("SELECT 1 FROM campaigns WHERE id=?", (cid,)).fetchone():
+        conn.close()
+        abort(404)
+    conn.execute("""UPDATE campaigns SET send_date=?, send_time=?, reply_date=?, reply_time=?
+                    WHERE id=?""", (send_date, send_time, reply_date, reply_time, cid))
+    conn.commit()
+    conn.close()
+    flash("تم تحديث تواريخ الحملة", "success")
+    return redirect(url_for("campaigns"))
 
 
 def _run_batch_bg():
