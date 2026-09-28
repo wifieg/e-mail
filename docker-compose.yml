@@ -1,6 +1,10 @@
-# Email Manager — تشغيل جاهز (مع PostgreSQL)
-# التشغيل:  docker compose up -d --build
+# Email Manager — إعداد الإنتاج (Dockge/السيرفر) مع PostgreSQL
+# يسحب صورة التطبيق الجاهزة من GHCR — لا حاجة لبناء محلي على السيرفر.
+# التشغيل على السيرفر:  docker compose pull && docker compose up -d
 # افتح المتصفح على:  http://localhost:8000   (المدير الافتراضي: admin / admin)
+#
+# للتطوير المحلي (بناء app.py من جهازك + إعادة تحميل تلقائي) يوجد
+# docker-compose.override.yml الذي يُدمج تلقائياً ويضيف build و bind لـ app.py.
 services:
   db:
     image: postgres:16
@@ -20,8 +24,8 @@ services:
       retries: 20
 
   email-manager:
-    build: .
-    image: email-manager:latest
+    # صورة الإنتاج الجاهزة من GitHub Container Registry (تُبنى تلقائياً عبر GitHub Actions).
+    image: ghcr.io/wifieg/e-mail:latest
     container_name: email-manager
     restart: unless-stopped
     depends_on:
