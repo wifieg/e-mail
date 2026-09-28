@@ -93,7 +93,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.6"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.0.7"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3617,7 +3617,11 @@ CAMPAIGNS_TPL = """
 </form>
 {% endif %}
 
-<div class="table-wrap">
+<div class="d-flex align-items-center gap-2 mb-1">
+ <span class="small text-muted"><i class="bi bi-arrow-repeat"></i> تحديث تلقائي كل ٥ ثوانٍ</span>
+ <span class="small text-success" id="campLive"></span>
+</div>
+<div class="table-wrap" id="campTableWrap">
 <table class="table align-middle">
  <thead><tr><th>#</th><th>الاسم</th><th>القالب</th><th>الحالة</th>
    <th>التقدّم</th><th>تاريخ الإرسال</th><th>تاريخ الاستقبال (الرد)</th><th>إجراءات</th></tr></thead>
@@ -3660,6 +3664,27 @@ CAMPAIGNS_TPL = """
  </tbody>
 </table>
 </div>
+<script>
+// تحديث لحظي لجدول الحملات (التقدّم + التواريخ) بدون إعادة تحميل الصفحة
+(function(){
+ var wrap=document.getElementById('campTableWrap');
+ if(!wrap) return;
+ function tick(){
+  fetch(location.pathname, {headers:{'X-Requested-With':'fetch'}})
+   .then(function(r){return r.text()})
+   .then(function(html){
+     var doc=new DOMParser().parseFromString(html,'text/html');
+     var fresh=doc.getElementById('campTableWrap');
+     if(fresh && fresh.innerHTML!==wrap.innerHTML){
+       wrap.innerHTML=fresh.innerHTML;
+       var live=document.getElementById('campLive');
+       if(live){ live.textContent='✓ تم التحديث'; setTimeout(function(){live.textContent='';},1500); }
+     }
+   }).catch(function(){});
+ }
+ setInterval(tick, 5000);
+})();
+</script>
 {% endblock %}
 """
 

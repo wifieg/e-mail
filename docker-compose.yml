@@ -23,6 +23,7 @@ services:
       EM_INT_SMTP_PORT: "8025"
       EM_INT_IMAP_PORT: "8143"
       EM_WAL: "1"       # WAL — أداء وتزامن أفضل على نظام الملفات الأصلي
+      TZ: "Asia/Riyadh" # توقيت السعودية (UTC+3)
 
 volumes:
   emaildata:

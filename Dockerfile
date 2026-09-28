@@ -7,6 +7,13 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
+# توقيت السعودية (Asia/Riyadh = UTC+3) — عشان مواعيد الحملات تطابق ساعتك
+ENV TZ=Asia/Riyadh
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+    && ln -sf /usr/share/zoneinfo/Asia/Riyadh /etc/localtime \
+    && echo "Asia/Riyadh" > /etc/timezone \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # ثبّت المتطلبات أولاً (طبقة تُخزَّن مؤقتاً)
