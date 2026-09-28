@@ -9,7 +9,9 @@ ENV PYTHONUNBUFFERED=1 \
 
 # توقيت السعودية (Asia/Riyadh = UTC+3) — عشان مواعيد الحملات تطابق ساعتك
 ENV TZ=Asia/Riyadh
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata \
+# tzdata لتوقيت السعودية + postgresql-client لأدوات النسخ الاحتياطي (pg_dump/pg_restore).
+# نسخة عميل Debian trixie (17) تقدر تعمل dump لسيرفر Postgres 16 بدون مشاكل.
+RUN apt-get update && apt-get install -y --no-install-recommends tzdata postgresql-client \
     && ln -sf /usr/share/zoneinfo/Asia/Riyadh /etc/localtime \
     && echo "Asia/Riyadh" > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*

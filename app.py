@@ -37,6 +37,9 @@ import csv
 import io
 import json
 import re
+import glob
+import shutil
+import subprocess
 import base64
 import ssl
 import time
@@ -62,7 +65,7 @@ import hashlib
 import secrets
 from flask import (
     Flask, request, redirect, url_for, flash, abort,
-    render_template, Response, session,
+    render_template, Response, session, send_file,
 )
 from jinja2 import DictLoader, ChoiceLoader
 
@@ -89,6 +92,9 @@ if USE_PG:
 KEY_FILE = os.path.join(DATA_DIR, "secret.key")
 FLASK_SECRET_FILE = os.path.join(DATA_DIR, "flask_secret")
 LOG_FILE = os.path.join(DATA_DIR, "email_manager.log")
+# مجلد النسخ الاحتياطي (يُشارَك مع حاوية النسخ التلقائي عبر volume)
+BACKUP_DIR = os.environ.get("EM_BACKUP_DIR", os.path.join(DATA_DIR, "backups"))
+BACKUP_KEEP = int(os.environ.get("EM_BACKUP_KEEP", "14"))   # عدد النسخ المحفوظة
 
 HOST = os.environ.get("EM_HOST", "127.0.0.1")
 PORT = int(os.environ.get("EM_PORT", "8000"))
@@ -101,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.1"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.2"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3129,6 +3135,7 @@ BASE_TPL = """
    <div class="grp">النظام</div>
    <a class="{{ 'active' if ep=='domains_page' }}" href="{{ url_for('domains_page') }}"><i class="bi bi-globe2"></i> الدومينات والصناديق</a>
    <a class="{{ 'active' if ep=='users_page' }}" href="{{ url_for('users_page') }}"><i class="bi bi-shield-lock-fill"></i> المستخدمون</a>
+   <a class="{{ 'active' if ep in ('backups_page',) }}" href="{{ url_for('backups_page') }}"><i class="bi bi-hdd-stack-fill"></i> النسخ الاحتياطي</a>
    <a class="{{ 'active' if ep=='server_page' }}" href="{{ url_for('server_page') }}"><i class="bi bi-hdd-network-fill"></i> السيرفر والنشر</a>
   {% elif user %}
    <a class="{{ 'active' if ep in ('me','mail_view','mail_message_view','mail_compose') }}" href="{{ url_for('me') }}"><i class="bi bi-inbox-fill"></i> بريدي</a>
@@ -3262,6 +3269,12 @@ INDEX_TPL = """
  <div><div class="text-muted small">الردود</div><div class="fw-bold">{{ db_info.replies }}</div></div>
  {% if db_info.size %}<div><div class="text-muted small">الحجم</div>
   <div class="fw-bold">{{ db_info.size }}</div></div>{% endif %}
+ <div><div class="text-muted small">آخر نسخة احتياطية</div>
+  <div class="fw-bold">
+   {% if db_info.last_backup %}<a href="{{ url_for('backups_page') }}"
+     class="text-decoration-none">{{ db_info.last_backup }}</a>
+   {% else %}<a href="{{ url_for('backups_page') }}" class="text-danger text-decoration-none">
+     لا توجد</a>{% endif %}</div></div>
 </div></div>
 {% endif %}
 <div class="card"><div class="card-body">
@@ -6229,9 +6242,53 @@ IBOX_MSG_TPL = """
 {% endblock %}
 """
 
+BACKUPS_TPL = """
+{% extends "base.html" %}{% block content %}
+<div class="d-flex align-items-center justify-content-between flex-wrap gap-2 mb-3">
+ <div><h1 class="mb-0"><i class="bi bi-hdd-stack-fill text-primary"></i> النسخ الاحتياطي</h1>
+  <div class="text-muted small">قاعدة البيانات: <b>{{ engine }}</b> ·
+   يُحتفظ تلقائياً بآخر {{ keep }} نسخة</div></div>
+ <form method="post" action="{{ url_for('backup_now') }}">
+  <button class="btn btn-primary"><i class="bi bi-plus-circle"></i> نسخ احتياطي الآن</button></form>
+</div>
+
+<div class="alert alert-light border small d-flex gap-2 align-items-start" style="max-width:820px">
+ <i class="bi bi-info-circle-fill text-primary mt-1"></i>
+ <div>النسخ التلقائية تُنشأ يومياً بواسطة خدمة <code>db-backup</code> وتُخزَّن في نفس
+  السيرفر (volume مستقل عن قاعدة البيانات). تقدر كمان تعمل نسخة فورية بالزر أعلاه،
+  أو تحمّل أي نسخة لجهازك.
+  {% if engine == 'PostgreSQL' %}<br>الاستعادة (على السيرفر):
+  <code dir="ltr">pg_restore -h db -U emailmgr -d emailmanager --clean --if-exists /backups/الملف.dump</code>
+  {% endif %}</div>
+</div>
+
+<div class="card" style="max-width:820px"><div class="card-body p-0">
+ <div class="table-wrap"><table class="table table-hover mb-0 align-middle">
+  <thead><tr><th>الملف</th><th>التاريخ</th><th>الحجم</th><th class="text-end">تحميل</th></tr></thead>
+  <tbody>
+  {% for b in backups %}
+   <tr>
+    <td class="small" dir="ltr">{{ b.name }}</td>
+    <td class="small text-muted">{{ b.mtime }}</td>
+    <td class="small">{{ b.size_bytes|filesize }}</td>
+    <td class="text-end"><a class="btn btn-sm btn-outline-primary"
+       href="{{ url_for('backup_download', name=b.name) }}">
+       <i class="bi bi-download"></i></a></td>
+   </tr>
+  {% else %}
+   <tr><td colspan="4" class="text-center text-muted py-4">
+    لا توجد نسخ احتياطية بعد — اضغط «نسخ احتياطي الآن».</td></tr>
+  {% endfor %}
+  </tbody>
+ </table></div>
+</div></div>
+{% endblock %}
+"""
+
 app.jinja_loader = ChoiceLoader([
     DictLoader({
         "base.html": BASE_TPL,
+        "backups.html": BACKUPS_TPL,
         "login.html": LOGIN_TPL,
         "users.html": USERS_TPL,
         "me.html": ME_TPL,
@@ -6897,6 +6954,9 @@ def index():
                                 ).fetchone()["s"]
         except Exception:  # noqa: BLE001
             db_info["size"] = "—"
+    _bks = list_backups()
+    db_info["last_backup"] = _bks[0]["mtime"] if _bks else None
+    db_info["backup_count"] = len(_bks)
     conn.close()
     cards = [
         {"label": "الموظفين", "value": total_emp, "icon": "bi-people", "color": "#667eea",
@@ -6913,6 +6973,105 @@ def index():
          "color": "#805ad5", "href": url_for("distribution")},
     ]
     return render("index.html", "لوحة التحكم", cards=cards, recent=recent, db_info=db_info)
+
+
+# ------------------------------------------------------------------ النسخ الاحتياطي
+def list_backups():
+    """قائمة النسخ الاحتياطية (الأحدث أولاً)."""
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+    except OSError:
+        return []
+    items = []
+    for p in glob.glob(os.path.join(BACKUP_DIR, "emailmanager_*.*")):
+        try:
+            st = os.stat(p)
+        except OSError:
+            continue
+        items.append({
+            "name": os.path.basename(p),
+            "size_bytes": st.st_size,
+            "mtime": datetime.fromtimestamp(st.st_mtime).strftime("%Y-%m-%d %H:%M:%S"),
+            "ts": st.st_mtime,
+        })
+    items.sort(key=lambda x: x["ts"], reverse=True)
+    return items
+
+
+def _prune_backups():
+    """يحذف النسخ الأقدم مع الإبقاء على آخر BACKUP_KEEP نسخة."""
+    for old in list_backups()[BACKUP_KEEP:]:
+        try:
+            os.remove(os.path.join(BACKUP_DIR, old["name"]))
+        except OSError:
+            pass
+
+
+def create_backup():
+    """ينشئ نسخة احتياطية الآن. يعيد (ok, msg, filename|None)."""
+    try:
+        os.makedirs(BACKUP_DIR, exist_ok=True)
+    except OSError as e:
+        return False, "تعذّر إنشاء مجلد النسخ: %s" % e, None
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    if USE_PG:
+        fname = "emailmanager_%s.dump" % ts
+        path = os.path.join(BACKUP_DIR, fname)
+        try:
+            r = subprocess.run(
+                ["pg_dump", "--dbname", PG_DSN, "-F", "c", "-f", path],
+                capture_output=True, text=True, timeout=600)
+        except FileNotFoundError:
+            return False, "أداة pg_dump غير مثبتة داخل الحاوية", None
+        except subprocess.TimeoutExpired:
+            return False, "انتهت مهلة النسخ الاحتياطي", None
+        if r.returncode != 0:
+            try:
+                os.remove(path)
+            except OSError:
+                pass
+            return False, "فشل pg_dump: " + (r.stderr.strip()[:300] or "خطأ غير معروف"), None
+    else:
+        fname = "emailmanager_%s.db" % ts
+        path = os.path.join(BACKUP_DIR, fname)
+        try:
+            src = sqlite3.connect(DB_NAME)
+            dst = sqlite3.connect(path)
+            with dst:
+                src.backup(dst)
+            dst.close()
+            src.close()
+        except Exception as e:  # noqa: BLE001
+            return False, "فشل النسخ: %s" % e, None
+    _prune_backups()
+    return True, "تم إنشاء نسخة احتياطية: %s" % fname, fname
+
+
+@app.route("/backups")
+def backups_page():
+    return render("backups.html", "النسخ الاحتياطي",
+                  backups=list_backups(),
+                  engine="PostgreSQL" if USE_PG else "SQLite",
+                  keep=BACKUP_KEEP)
+
+
+@app.route("/backups/now", methods=["POST"])
+def backup_now():
+    ok, msg, _ = create_backup()
+    flash(msg, "success" if ok else "error")
+    return redirect(url_for("backups_page"))
+
+
+@app.route("/backups/download/<name>")
+def backup_download(name):
+    # منع اجتياز المسار — نسمح فقط بأسماء النسخ داخل المجلد
+    safe = os.path.basename(name)
+    if not re.fullmatch(r"emailmanager_\d{8}_\d{6}\.(dump|db)", safe):
+        abort(404)
+    path = os.path.join(BACKUP_DIR, safe)
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(path, as_attachment=True, download_name=safe)
 
 
 # ------------------------------------------------------------------ الحسابات

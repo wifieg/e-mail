@@ -34,6 +34,8 @@ services:
     volumes:
       # نحتفظ بـ SQLite القديمة للنقل التلقائي أول مرة (تُقرأ ثم تُهجَر لصالح Postgres).
       - emaildata:/app/data
+      # نفس volume النسخ الاحتياطي المشترك مع خدمة db-backup (للتحميل/النسخ الفوري).
+      - pgbackups:/app/backups
     environment:
       EM_HOST: "0.0.0.0"
       EM_PORT: "8000"
@@ -43,8 +45,40 @@ services:
       EM_PG: "postgresql://emailmgr:EmailMgr%232026@db:5432/emailmanager"
       EM_INT_SMTP_PORT: "8025"
       EM_INT_IMAP_PORT: "8143"
+      EM_BACKUP_DIR: "/app/backups"
+      EM_BACKUP_KEEP: "14"
       TZ: "Asia/Riyadh"   # توقيت السعودية (UTC+3)
+
+  # نسخ احتياطي تلقائي يومي لقاعدة Postgres — يحتفظ بآخر 14 نسخة داخل volume مستقل.
+  db-backup:
+    image: postgres:16
+    container_name: email-db-backup
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGPASSWORD: "EmailMgr#2026"
+      TZ: "Asia/Riyadh"
+    volumes:
+      - pgbackups:/backups
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "db-backup: started (daily, keep 14)";
+        while true; do
+          TS=$$(date +%Y%m%d_%H%M%S);
+          OUT="/backups/emailmanager_$${TS}.dump";
+          if pg_dump -h db -U emailmgr -d emailmanager -F c -f "$$OUT"; then
+            echo "db-backup: ok $$OUT";
+          else
+            echo "db-backup: FAILED $$OUT"; rm -f "$$OUT";
+          fi;
+          ls -1t /backups/emailmanager_*.dump 2>/dev/null | tail -n +15 | xargs -r rm -f;
+          sleep 86400;
+        done
 
 volumes:
   emaildata:
   pgdata:
+  pgbackups:
