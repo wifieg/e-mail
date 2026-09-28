@@ -101,7 +101,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.0"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.1"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -728,6 +728,12 @@ def init_db():
         "CREATE INDEX IF NOT EXISTS idx_sent_campaign ON sent_emails(campaign_id)",
         "CREATE INDEX IF NOT EXISTS idx_mailboxes_domain ON mail_boxes(domain_id)",
         "CREATE INDEX IF NOT EXISTS idx_mailmsg_box ON mail_messages(box_email, folder)",
+        "CREATE INDEX IF NOT EXISTS idx_mailmsg_campaign ON mail_messages(campaign_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mailmsg_scan ON mail_messages(box_email, folder, is_replied)",
+        "CREATE INDEX IF NOT EXISTS idx_emp_replies_emp ON emp_replies(employee_id)",
+        "CREATE INDEX IF NOT EXISTS idx_emp_active ON employees(active)",
+        "CREATE INDEX IF NOT EXISTS idx_accounts_email ON accounts(email)",
+        "CREATE INDEX IF NOT EXISTS idx_employees_email ON employees(email)",
     ]:
         cur.execute(stmt)
 
@@ -2358,16 +2364,19 @@ def _emp_account(emp):
             return dflt
     imap_server = (get_setting("emp_imap_server", "") or "").strip()
     smtp_server = (get_setting("emp_smtp_server", "") or "").strip()
-    g = guess_mail_config(emp["email"])
+    security    = (get_setting("emp_security", "") or "").strip()
+    # نظام بريد داخلي بالكامل: عند غياب إعداد سيرفر الموظفين نوجّه الاتصال
+    # لسيرفر البريد المدمج (127.0.0.1) بدل تخمين سيرفر خارجي من نطاق البريد
+    # (التخمين الخارجي يفشل بـ DNS: "Name or service not known").
     return {
         "email": emp["email"],
         "display_name": emp["name"],
         "password": emp["password"],
-        "smtp_server": smtp_server or g[0],
-        "smtp_port": gi("emp_smtp_port", 0) or g[1],
-        "security": (get_setting("emp_security", "") or "").strip() or g[2],
-        "imap_server": imap_server or g[3],
-        "imap_port": gi("emp_imap_port", 0) or g[4],
+        "smtp_server": smtp_server or LOCAL_MAIL_HOST,
+        "smtp_port": gi("emp_smtp_port", 0) or INT_SMTP_PORT,
+        "security": security or "none",
+        "imap_server": imap_server or LOCAL_MAIL_HOST,
+        "imap_port": gi("emp_imap_port", 0) or INT_IMAP_PORT,
     }
 
 
@@ -3242,6 +3251,19 @@ INDEX_TPL = """
  </div>
  {% endfor %}
 </div>
+{% if db_info %}
+<div class="card mb-2" style="max-width:640px"><div class="card-body py-2 d-flex align-items-center gap-3 flex-wrap">
+ <span style="width:38px;height:38px;border-radius:10px;display:grid;place-items:center;
+   background:#0f6cbd1f;color:#0f6cbd;font-size:1.15rem"><i class="bi bi-database-fill-check"></i></span>
+ <div><div class="text-muted small">قاعدة البيانات</div>
+  <div class="fw-bold" style="color:#0f6cbd">{{ db_info.engine }}</div></div>
+ <div class="ms-3"><div class="text-muted small">الرسائل المخزّنة</div>
+  <div class="fw-bold">{{ db_info.messages }}</div></div>
+ <div><div class="text-muted small">الردود</div><div class="fw-bold">{{ db_info.replies }}</div></div>
+ {% if db_info.size %}<div><div class="text-muted small">الحجم</div>
+  <div class="fw-bold">{{ db_info.size }}</div></div>{% endif %}
+</div></div>
+{% endif %}
 <div class="card"><div class="card-body">
  <h5 class="mb-3">آخر 10 عمليات إرسال</h5>
  <div class="table-wrap">
@@ -6865,6 +6887,16 @@ def index():
                   "WHERE owner_account_id IS NOT NULL").fetchone()["c"]
     recent = q("SELECT sent_at, to_email, subject, status, error FROM sent_emails "
                "ORDER BY id DESC LIMIT 10").fetchall()
+    total_msgs = q("SELECT COUNT(*) c FROM mail_messages").fetchone()["c"]
+    total_reps = q("SELECT COUNT(*) c FROM emp_replies WHERE status='sent'").fetchone()["c"]
+    db_info = {"engine": "PostgreSQL" if USE_PG else "SQLite",
+               "messages": total_msgs, "replies": total_reps}
+    if USE_PG:
+        try:
+            db_info["size"] = q("SELECT pg_size_pretty(pg_database_size(current_database())) s"
+                                ).fetchone()["s"]
+        except Exception:  # noqa: BLE001
+            db_info["size"] = "—"
     conn.close()
     cards = [
         {"label": "الموظفين", "value": total_emp, "icon": "bi-people", "color": "#667eea",
@@ -6880,7 +6912,7 @@ def index():
         {"label": "أقسام الإرسال", "value": groups_ct, "icon": "bi-diagram-3",
          "color": "#805ad5", "href": url_for("distribution")},
     ]
-    return render("index.html", "لوحة التحكم", cards=cards, recent=recent)
+    return render("index.html", "لوحة التحكم", cards=cards, recent=recent, db_info=db_info)
 
 
 # ------------------------------------------------------------------ الحسابات
