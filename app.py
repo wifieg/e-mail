@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.3"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.4"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3125,6 +3125,7 @@ BASE_TPL = """
    <a class="{{ 'active' if ep=='employees' }}" href="{{ url_for('employees') }}"><i class="bi bi-people-fill"></i> الموظفون</a>
    <a class="{{ 'active' if ep=='templates_page' }}" href="{{ url_for('templates_page') }}"><i class="bi bi-pen-fill"></i> توقيع الموظفين</a>
    <a class="{{ 'active' if ep=='distribution' }}" href="{{ url_for('distribution') }}"><i class="bi bi-diagram-3-fill"></i> توزيع الموظفين</a>
+   <a class="nav-hl {{ 'active' if ep=='quick_send' }}" href="{{ url_for('quick_send') }}"><i class="bi bi-lightning-charge-fill"></i> إرسال سريع</a>
    <a class="{{ 'active' if ep in ('campaigns','campaign_detail') }}" href="{{ url_for('campaigns') }}"><i class="bi bi-megaphone-fill"></i> الحملات</a>
    <a class="{{ 'active' if ep=='schedule_page' }}" href="{{ url_for('schedule_page') }}"><i class="bi bi-shield-fill-check"></i> الجدولة والحماية</a>
    <div class="grp">الرسائل والردود</div>
@@ -3244,6 +3245,16 @@ INDEX_TPL = """
 {% extends "base.html" %}{% block content %}
 <div class="page-head"><div><h1>لوحة التحكم</h1>
  <div class="sub">نظرة عامة على النظام</div></div></div>
+<div class="d-flex gap-2 flex-wrap mb-3">
+ <a class="btn btn-primary" href="{{ url_for('quick_send') }}">
+  <i class="bi bi-lightning-charge-fill"></i> إرسال سريع</a>
+ <a class="btn btn-outline-primary" href="{{ url_for('campaigns') }}">
+  <i class="bi bi-megaphone-fill"></i> الحملات</a>
+ <a class="btn btn-outline-success" href="{{ url_for('employees') }}">
+  <i class="bi bi-person-plus-fill"></i> الموظفون</a>
+ <form method="post" action="{{ url_for('backup_now') }}" class="d-inline">
+  <button class="btn btn-outline-secondary"><i class="bi bi-hdd-stack-fill"></i> نسخة احتياطية الآن</button></form>
+</div>
 <div class="row g-3 mb-2">
  {% for c in cards %}
  <div class="col-6 col-md-4 col-xl-2">
@@ -3476,13 +3487,44 @@ EMPLOYEES_TPL = """
  </div>
  <div class="form-text" id="empCount"></div>
 </div>
+
+<div class="card card-body py-2 mb-2" id="bulkBar" style="display:none">
+ <div class="d-flex align-items-center gap-2 flex-wrap">
+  <span class="badge bg-primary" id="bulkCount">0 محدد</span>
+  <select id="bulkAction" class="form-select form-select-sm" style="width:auto"
+     onchange="document.getElementById('bulkAccWrap').style.display=this.value=='move'?'':'none'">
+   <option value="activate">تفعيل</option>
+   <option value="deactivate">إيقاف</option>
+   <option value="move">نقل لحساب رئيسي</option>
+   <option value="delete">حذف</option>
+  </select>
+  <span id="bulkAccWrap" style="display:none">
+   <select id="bulkAccount" class="form-select form-select-sm" style="width:auto">
+    <option value="">— بدون حساب (إلغاء تعيين) —</option>
+    {% for a in accs %}<option value="{{ a.id }}">{{ a.display_name or a.email }}</option>{% endfor %}
+   </select></span>
+  <button class="btn btn-sm btn-primary" onclick="bulkApply()">
+   <i class="bi bi-check2-square"></i> تنفيذ</button>
+  <button class="btn btn-sm btn-outline-secondary" onclick="empClearSel()">إلغاء التحديد</button>
+ </div>
+</div>
+<form id="bulkForm" method="POST" action="{{ url_for('employees_bulk') }}" class="d-none">
+ <input type="hidden" name="bulk_action" id="bulkActionField">
+ <input type="hidden" name="target_account" id="bulkAccountField">
+ <span id="bulkIds"></span>
+</form>
+
 <div class="table-responsive">
 <table class="table table-striped align-middle" id="empTable">
- <thead><tr><th>الاسم</th><th>البريد</th><th>الإقامة</th><th>الرقم الوظيفي</th><th>المنصب</th><th>القسم</th><th>الهاتف</th>
+ <thead><tr>
+   <th style="width:34px"><input type="checkbox" id="empAll" onclick="empToggleAll(this)"
+       title="تحديد الكل"></th>
+   <th>الاسم</th><th>البريد</th><th>الإقامة</th><th>الرقم الوظيفي</th><th>المنصب</th><th>القسم</th><th>الهاتف</th>
    <th>الحساب المسؤول</th><th>توقيع</th><th>الاتصال</th><th>نشط</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for e in rows %}
  <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ e.department ~ ' ' ~ e.title ~ ' ' ~ (e.iqama or '') ~ ' ' ~ (e.emp_number or ''))|lower }}">
+  <td><input type="checkbox" class="emp-chk" value="{{ e.id }}" onclick="empSync()"></td>
   <td>{{ e.name }}</td><td dir="ltr">{{ e.email }}</td>
   <td dir="ltr">{{ e.iqama or '—' }}</td><td dir="ltr">{{ e.emp_number or '—' }}</td><td>{{ e.title }}</td>
   <td>{{ e.department }}</td><td>{{ e.phone }}</td>
@@ -3509,7 +3551,7 @@ EMPLOYEES_TPL = """
       onclick="return confirm('حذف الموظف؟')"><i class="bi bi-trash"></i></a>
   </td>
  </tr>
- {% else %}<tr><td colspan="12" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
+ {% else %}<tr><td colspan="13" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
  </tbody>
 </table>
 </div>
@@ -3580,6 +3622,49 @@ function empFilter(){
   if(hit) shown++;
  });
  document.getElementById('empCount').textContent = q ? ('ظهر '+shown+' موظف') : '';
+}
+function empChecked(){
+ return Array.prototype.slice.call(document.querySelectorAll('.emp-chk:checked'));
+}
+function empSync(){
+ var n = empChecked().length;
+ var bar = document.getElementById('bulkBar');
+ bar.style.display = n ? '' : 'none';
+ document.getElementById('bulkCount').textContent = n + ' محدد';
+ var all = document.getElementById('empAll');
+ var total = document.querySelectorAll('.emp-chk').length;
+ all.checked = n>0 && n===total;
+ all.indeterminate = n>0 && n<total;
+}
+function empToggleAll(cb){
+ document.querySelectorAll('#empTable tbody tr').forEach(function(r){
+  if(r.style.display==='none') return;      // الصفوف الظاهرة فقط (يحترم البحث)
+  var c=r.querySelector('.emp-chk'); if(c) c.checked=cb.checked;
+ });
+ empSync();
+}
+function empClearSel(){
+ document.querySelectorAll('.emp-chk').forEach(function(c){c.checked=false;});
+ empSync();
+}
+function bulkApply(){
+ var ids = empChecked().map(function(c){return c.value;});
+ if(!ids.length){ alert('حدّد موظف واحد على الأقل'); return; }
+ var act = document.getElementById('bulkAction').value;
+ var labels={activate:'تفعيل',deactivate:'إيقاف',move:'نقل',delete:'حذف'};
+ var warn = (act==='delete')
+   ? ('⚠️ حذف '+ids.length+' موظف نهائياً؟ لا يمكن التراجع.')
+   : ('تأكيد '+labels[act]+' '+ids.length+' موظف؟');
+ if(!confirm(warn)) return;
+ document.getElementById('bulkActionField').value = act;
+ document.getElementById('bulkAccountField').value =
+   (act==='move') ? document.getElementById('bulkAccount').value : '';
+ var box=document.getElementById('bulkIds'); box.innerHTML='';
+ ids.forEach(function(id){
+  var i=document.createElement('input'); i.type='hidden'; i.name='ids'; i.value=id;
+  box.appendChild(i);
+ });
+ document.getElementById('bulkForm').submit();
 }
 </script>
 {% endblock %}
@@ -3913,6 +3998,8 @@ CAMPAIGNS_TPL = """
    {% else %}<span class="text-muted">—</span>{% endif %}</td>
   <td class="text-nowrap">
    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('campaign_detail', cid=c.id) }}">تفاصيل</a>
+   <a class="btn btn-sm btn-outline-info" href="{{ url_for('campaign_duplicate', cid=c.id) }}"
+      title="إنشاء نسخة جاهزة من الحملة"><i class="bi bi-files"></i> تكرار</a>
    <button class="btn btn-sm btn-outline-success" data-bs-toggle="modal"
      data-bs-target="#dt{{ c.id }}"><i class="bi bi-calendar2-week"></i> تعديل التواريخ</button>
    {% if c.status=='active' %}
@@ -3973,6 +4060,58 @@ CAMPAIGNS_TPL = """
  setInterval(tick, 5000);
 })();
 </script>
+{% endblock %}
+"""
+
+QUICKSEND_TPL = """
+{% extends "base.html" %}{% block content %}
+<div class="d-flex align-items-center gap-2 mb-1">
+ <h1 class="mb-0"><i class="bi bi-lightning-charge-fill text-warning"></i> إرسال سريع</h1></div>
+<div class="text-muted small mb-3">اختَر القالب والحساب والتواريخ — والحملة تتعمل فوراً بكل موظفي الحساب.</div>
+
+{% if not templates %}
+ <div class="alert alert-warning">أضف <b>قالب رسالة</b> أولاً من
+  <a href="{{ url_for('message_templates_page') }}">قوالب الرسائل المرسلة</a>.</div>
+{% else %}
+<form method="POST" action="{{ url_for('add_campaign') }}" class="card card-body"
+      style="max-width:720px">
+ <div class="row">
+  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
+    <i class="bi bi-file-earmark-text text-primary"></i> القالب</label>
+   <select name="template_id" class="form-select" required>
+    {% for t in templates %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+   </select></div>
+  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
+    <i class="bi bi-person-badge text-success"></i> الحساب المُرسِل (مجموعته)</label>
+   <select name="scope_account" class="form-select">
+    <option value="">كل الموظفين ({{ total_emp }})</option>
+    {% for a in accs %}<option value="{{ a.id }}">
+     {{ a.display_name or a.email }} — {{ a.n_emp }} موظف</option>{% endfor %}
+   </select></div>
+ </div>
+ <div class="row">
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-calendar-event text-danger"></i> تاريخ الإرسال</label>
+   <input name="send_date" type="date" class="form-control" value="{{ today }}" required></div>
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-clock"></i> ساعة الإرسال</label>
+   <input name="send_time" type="time" class="form-control" value="12:00" required></div>
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-reply-fill text-success"></i> تاريخ الرد</label>
+   <input name="reply_date" type="date" class="form-control" value="{{ today }}" required></div>
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-clock-history"></i> ساعة الرد</label>
+   <input name="reply_time" type="time" class="form-control" value="12:00" required></div>
+ </div>
+ <div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle text-primary"></i>
+  اسم الحملة هيتحط تلقائياً (اسم القالب + التاريخ)، وكل الموظفين هيدخلوا قائمة الإرسال.
+  ممكن بعدها تعدّل التواريخ أو تكرّر الحملة من صفحة <a href="{{ url_for('campaigns') }}">الحملات</a>.</div>
+ <div class="d-flex gap-2">
+  <button class="btn btn-primary btn-lg"><i class="bi bi-rocket-takeoff"></i> أنشئ وأرسل</button>
+  <a class="btn btn-outline-secondary" href="{{ url_for('campaigns') }}">الحملات المتقدّمة</a>
+ </div>
+</form>
+{% endif %}
 {% endblock %}
 """
 
@@ -6322,6 +6461,7 @@ app.jinja_loader = ChoiceLoader([
         "templates.html": TEMPLATES_TPL,
         "msg_templates.html": MSG_TEMPLATES_TPL,
         "campaigns.html": CAMPAIGNS_TPL,
+        "quicksend.html": QUICKSEND_TPL,
         "distribution.html": DISTRIBUTION_TPL,
         "campaign_detail.html": CAMPAIGN_DETAIL_TPL,
         "schedule.html": SCHEDULE_TPL,
@@ -7292,8 +7432,54 @@ def employees():
     rows = conn.execute("""SELECT e.*, a.email AS owner_email, a.display_name AS owner_name
                            FROM employees e LEFT JOIN accounts a ON a.id = e.owner_account_id
                            ORDER BY e.name""").fetchall()
+    accs = conn.execute("SELECT id, email, display_name FROM accounts ORDER BY id").fetchall()
     conn.close()
-    return render("employees.html", "الموظفين", rows=rows)
+    return render("employees.html", "الموظفين", rows=rows, accs=accs)
+
+
+@app.route("/employees/bulk", methods=["POST"])
+def employees_bulk():
+    """إجراءات جماعية على الموظفين المحدَّدين: تفعيل/إيقاف/نقل/حذف."""
+    f = request.form
+    action = (f.get("bulk_action", "") or "").strip()
+    ids = [int(x) for x in f.getlist("ids") if x.isdigit()]
+    if not ids:
+        flash("لم تحدّد أي موظف", "error")
+        return redirect(url_for("employees"))
+    conn = get_connection()
+    cur = conn.cursor()
+    ph = ",".join(["?"] * len(ids))
+    if action == "activate":
+        cur.execute(f"UPDATE employees SET active=1 WHERE id IN ({ph})", ids)
+        msg = "تم تفعيل %d موظف" % len(ids)
+    elif action == "deactivate":
+        cur.execute(f"UPDATE employees SET active=0 WHERE id IN ({ph})", ids)
+        msg = "تم إيقاف %d موظف" % len(ids)
+    elif action == "move":
+        acc = (f.get("target_account", "") or "").strip()
+        if acc == "":
+            cur.execute(f"UPDATE employees SET owner_account_id=NULL WHERE id IN ({ph})", ids)
+            msg = "تم إلغاء تعيين %d موظف" % len(ids)
+        elif acc.isdigit() and cur.execute("SELECT 1 FROM accounts WHERE id=?",
+                                            (int(acc),)).fetchone():
+            cur.execute(f"UPDATE employees SET owner_account_id=? WHERE id IN ({ph})",
+                        [int(acc)] + ids)
+            msg = "تم نقل %d موظف للحساب المحدّد" % len(ids)
+        else:
+            conn.close()
+            flash("اختر حساباً صحيحاً للنقل", "error")
+            return redirect(url_for("employees"))
+    elif action == "delete":
+        cur.execute(f"DELETE FROM employees WHERE id IN ({ph})", ids)
+        msg = "تم حذف %d موظف" % len(ids)
+    else:
+        conn.close()
+        flash("إجراء غير معروف", "error")
+        return redirect(url_for("employees"))
+    conn.commit()
+    conn.close()
+    flash(msg, "success")
+    return redirect(url_for("employees"))
 
 
 @app.route("/employees/add", methods=["POST"])
@@ -7822,10 +8008,26 @@ def campaigns():
                   scope=request.args.get("scope", ""))
 
 
+@app.route("/quick-send")
+def quick_send():
+    """شاشة إرسال سريع: قالب + حساب + تواريخ في مكان واحد → حملة فوراً."""
+    conn = get_connection()
+    templates = conn.execute("SELECT id, name FROM templates ORDER BY name").fetchall()
+    accs = conn.execute(
+        "SELECT id, email, display_name, "
+        "(SELECT COUNT(*) FROM employees e WHERE e.owner_account_id=accounts.id "
+        " AND e.active=1) AS n_emp FROM accounts ORDER BY id").fetchall()
+    total_emp = conn.execute("SELECT COUNT(*) c FROM employees WHERE active=1").fetchone()["c"]
+    conn.close()
+    today = datetime.now().strftime("%Y-%m-%d")
+    return render("quicksend.html", "إرسال سريع", templates=templates, accs=accs,
+                  total_emp=total_emp, today=today)
+
+
 @app.route("/campaigns/add", methods=["POST"])
 def add_campaign():
     f = request.form
-    name = f["name"].strip()
+    name = (f.get("name", "") or "").strip()
     template_id = int(f["template_id"])
     flt = f.get("filter", "").strip().lower()
     scope_acc = (f.get("scope_account") or "").strip()
@@ -7841,11 +8043,16 @@ def add_campaign():
 
     conn = get_connection()
     cur = conn.cursor()
-    valid_tpls = {r["id"] for r in cur.execute("SELECT id FROM templates").fetchall()}
+    valid_tpls = {r["id"]: r["name"] for r in
+                  cur.execute("SELECT id, name FROM templates").fetchall()}
     if template_id not in valid_tpls:
         conn.close()
         flash("القالب غير موجود", "error")
         return redirect(url_for("campaigns"))
+
+    # اسم تلقائي لو فاضي (يفيد شاشة الإرسال السريع): اسم القالب + تاريخ الإرسال
+    if not name:
+        name = "%s — %s" % (valid_tpls[template_id], send_date)
 
     cur.execute("""INSERT INTO campaigns (name, template_id, send_date, send_time,
                    reply_date, reply_time) VALUES (?, ?, ?, ?, ?, ?)""",
@@ -7965,6 +8172,39 @@ def campaign_edit_dates(cid):
     conn.close()
     flash("تم تحديث تواريخ الحملة", "success")
     return redirect(url_for("campaigns"))
+
+
+@app.route("/campaigns/<int:cid>/duplicate")
+def campaign_duplicate(cid):
+    """ينشئ نسخة جديدة من حملة موجودة: نفس القالب والمستلمين وقوالب الأقسام
+    والتواريخ — كلهم جاهزين، وإنت بس تعدّل التاريخ لو حبيت."""
+    conn = get_connection()
+    cur = conn.cursor()
+    c = cur.execute("SELECT * FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not c:
+        conn.close()
+        abort(404)
+    new_name = (c["name"] or "حملة") + " (نسخة)"
+    cur.execute("""INSERT INTO campaigns (name, template_id, send_date, send_time,
+                   reply_date, reply_time, status) VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+                (new_name, c["template_id"], c["send_date"], c["send_time"],
+                 c["reply_date"], c["reply_time"]))
+    new_cid = cur.lastrowid
+    # قوالب الأقسام
+    for dt in cur.execute("SELECT department, template_id FROM campaign_dept_templates "
+                          "WHERE campaign_id=?", (cid,)).fetchall():
+        cur.execute("""INSERT INTO campaign_dept_templates (campaign_id, department, template_id)
+                       VALUES (?, ?, ?)""", (new_cid, dt["department"], dt["template_id"]))
+    # نفس المستلمين (كلهم معلّقون من جديد)
+    emp_ids = [r["employee_id"] for r in cur.execute(
+        "SELECT employee_id FROM campaign_recipients WHERE campaign_id=?", (cid,)).fetchall()]
+    cur.executemany("INSERT OR IGNORE INTO campaign_recipients (campaign_id, employee_id) "
+                    "VALUES (?, ?)", [(new_cid, eid) for eid in emp_ids])
+    conn.commit()
+    conn.close()
+    flash("اتعملت نسخة من الحملة بـ %d مستلماً — عدّل التاريخ لو حبيت من «تعديل التواريخ»."
+          % len(emp_ids), "success")
+    return redirect(url_for("campaign_detail", cid=new_cid))
 
 
 def _run_batch_bg():
