@@ -93,7 +93,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.0.5"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.0.6"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -521,11 +521,16 @@ def init_db():
         if col not in sent_cols:
             cur.execute(f"ALTER TABLE sent_emails ADD COLUMN {col} {ddl}")
 
-    # تاريخ/وقت مخصّص لكل حملة (إرسال بتاريخ قديم مثلاً)
+    # تاريخ/وقت مخصّص لكل حملة (إرسال + تسليم الرد)
     camp_cols = _table_columns(cur, "campaigns")
-    for col in ("send_date", "send_time"):
+    for col in ("send_date", "send_time", "reply_date", "reply_time"):
         if col not in camp_cols:
             cur.execute(f"ALTER TABLE campaigns ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+
+    # ربط رسالة الحملة بصندوق الموظف (لتحديد تاريخ الرد من الحملة نفسها)
+    mm_cols = _table_columns(cur, "mail_messages")
+    if "campaign_id" not in mm_cols:
+        cur.execute("ALTER TABLE mail_messages ADD COLUMN campaign_id INTEGER")
 
     # الرسائل صارت تُقرأ حيّاً من السيرفر — لم يعد هناك تخزين محلي لها
     cur.execute("DROP INDEX IF EXISTS idx_inbox_msgid")
@@ -767,7 +772,7 @@ def _signature_html(text, logo=""):
 
 
 def internal_deliver(from_email, from_name, to_email, subject, body_html,
-                     in_reply_to=None, conn=None, date_override=None):
+                     in_reply_to=None, conn=None, date_override=None, campaign_id=None):
     """يسلّم رسالة داخلياً: نسخة inbox للمستقبِل + نسخة sent للمرسِل.
     body_html = نص HTML جاهز (بالتوقيع). يعيد (نجاح, msg_id)."""
     own = conn is None
@@ -780,17 +785,17 @@ def internal_deliver(from_email, from_name, to_email, subject, body_html,
         # نسخة المستقبِل (وارد)
         conn.execute(
             """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
-                   to_email, subject, body, msg_id, in_reply_to, created_at)
-               VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   to_email, subject, body, msg_id, in_reply_to, created_at, campaign_id)
+               VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (to_email.lower(), from_email.lower(), from_name or "", to_email.lower(),
-             subject, body_html, msg_id, in_reply_to, now))
+             subject, body_html, msg_id, in_reply_to, now, campaign_id))
         # نسخة المرسِل (مُرسَل)
         conn.execute(
             """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
-                   to_email, subject, body, msg_id, in_reply_to, created_at)
-               VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   to_email, subject, body, msg_id, in_reply_to, created_at, campaign_id)
+               VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (from_email.lower(), from_email.lower(), from_name or "", to_email.lower(),
-             subject, body_html, msg_id, in_reply_to, now))
+             subject, body_html, msg_id, in_reply_to, now, campaign_id))
         if own:
             conn.commit()
         return True, msg_id
@@ -1980,6 +1985,7 @@ def _process_batch_inner(limit):
         return {"sent": 0, "failed": 0, "skipped": 0, "message": "لا توجد حسابات نشطة"}
 
     order = "RANDOM()" if cfg["randomize"] else "r.id"
+    now_iso = datetime.now().isoformat(timespec="seconds")
     rows = cur.execute(f"""
         SELECT r.id AS rid, r.campaign_id, r.employee_id, e.owner_account_id,
                e.name, e.email, e.title, e.department, e.phone, e.signature,
@@ -1993,9 +1999,12 @@ def _process_batch_inner(limit):
              WHERE dt.campaign_id = r.campaign_id AND dt.department = e.department),
             c.template_id)
         WHERE r.status = 'pending' AND c.status = 'active' AND e.active = 1
+          AND (c.send_date='' OR
+               (c.send_date || 'T' ||
+                CASE WHEN c.send_time='' THEN '12:00' ELSE c.send_time END) <= ?)
         ORDER BY {order}
         LIMIT ?
-    """, (batch_size,)).fetchall()
+    """, (now_iso, batch_size)).fetchall()
 
     if not rows:
         conn.close()
@@ -2058,7 +2067,7 @@ def _process_batch_inner(limit):
                 html += "<br><br>" + sig_html
             ok, message = internal_deliver(
                 account["email"], account["display_name"] or "", row["email"], subject, html,
-                date_override=campaign_date)
+                date_override=campaign_date, campaign_id=row["campaign_id"])
         else:
             ok, message = send_email(account, row["email"], subject, full_body,
                                      save_to_sent=cfg["save_to_sent"])
@@ -2280,7 +2289,20 @@ def scan_reverse_internal(conn):
                 received = datetime.fromisoformat(m["created_at"]) if m["created_at"] else now
             except ValueError:
                 received = now
-            due = received + timedelta(minutes=_reverse_delay_minutes(conn, sender))
+            # لو الرسالة من حملة لها تاريخ تسليم محدّد → الرد يوصل في التاريخ ده بالظبط
+            due = None
+            cid = m["campaign_id"] if "campaign_id" in m.keys() else None
+            if cid:
+                crow = conn.execute("SELECT reply_date, reply_time FROM campaigns WHERE id=?",
+                                    (cid,)).fetchone()
+                if crow and (crow["reply_date"] or "").strip():
+                    _rt = (crow["reply_time"] or "12:00").strip() or "12:00"
+                    try:
+                        due = datetime.fromisoformat(crow["reply_date"].strip() + "T" + _rt)
+                    except ValueError:
+                        due = None
+            if due is None:
+                due = received + timedelta(minutes=_reverse_delay_minutes(conn, sender))
             cur = conn.execute("""INSERT OR IGNORE INTO reverse_queue
                 (employee_id, account_email, folder, uid, msgid, subject,
                  received_at, due_at, status)
@@ -2462,28 +2484,33 @@ def scheduler_loop():
         try:
             conn = get_connection()
             s = conn.execute("SELECT * FROM schedule_settings WHERE id = 1").fetchone()
+            now_iso = datetime.now().isoformat(timespec="seconds")
+            # الجدولة لكل حملة على حدة: نبعت لو فيه مستلمون معلّقون وحان موعد إرسال حملتهم.
+            due_pending = conn.execute("""
+                SELECT COUNT(*) c FROM campaign_recipients r
+                JOIN campaigns cc ON cc.id = r.campaign_id
+                WHERE r.status='pending' AND cc.status='active'
+                  AND (cc.send_date='' OR
+                       (cc.send_date || 'T' ||
+                        CASE WHEN cc.send_time='' THEN '12:00' ELSE cc.send_time END) <= ?)
+            """, (now_iso,)).fetchone()["c"]
             conn.close()
-            # بوابة وقت الإرسال المجدول: لو الموعد في المستقبل استنّى، ولو قديم/حان أرسِل.
-            # تحديد موعد إرسال = تفعيل تلقائي للإرسال (حتى لو خيار الجدولة مقفول).
-            sched = _scheduled_send_dt()
-            time_ok = (sched is None) or (datetime.now() >= sched)
-            auto_on = bool(s and s["enabled"]) or (sched is not None)
-            if s and auto_on and time_ok:
-                interval = max(1, int(s["interval_minutes"]))
+            if due_pending and not _batch_lock.locked():
+                interval = max(1, int(s["interval_minutes"])) if s else 1
                 due = True
-                if s["last_run"]:
+                if s and s["last_run"]:
                     try:
                         last = datetime.fromisoformat(s["last_run"])
                         due = datetime.now() >= last + timedelta(minutes=interval)
                     except ValueError:
                         due = True
-                if due and not _batch_lock.locked():
+                if due:
                     conn = get_connection()
                     conn.execute("UPDATE schedule_settings SET last_run = ? WHERE id = 1",
-                                 (datetime.now().isoformat(timespec="seconds"),))
+                                 (now_iso,))
                     conn.commit()
                     conn.close()
-                    log.info("تشغيل دفعة مجدولة")
+                    log.info("تشغيل دفعة مجدولة (حملات حان موعدها)")
                     process_batch()
             # الرد العكسي يعمل باستمرار: فحص دوري + إرسال ما حان موعده
             reverse_tick()
@@ -3555,12 +3582,18 @@ CAMPAIGNS_TPL = """
    <div class="form-text">اختر حساباً ليشمل مستلمو الحملة مجموعته فقط
     (التوزيع من صفحة «توزيع الموظفين»).</div>
   </div>
-  <div class="col-md-3 mb-2"><label><i class="bi bi-calendar-event"></i> تاريخ الحملة (اختياري)</label>
-   <input name="send_date" type="date" class="form-control">
-   <div class="form-text">سيبه فاضي = تاريخ اليوم. حطّ تاريخ قديم عشان توصل الرسايل والردود بنفس التاريخ.</div></div>
-  <div class="col-md-3 mb-2"><label><i class="bi bi-clock"></i> الساعة</label>
-   <input name="send_time" type="time" class="form-control" value="12:00"></div>
+  <div class="col-md-3 mb-2"><label><i class="bi bi-calendar-event text-danger"></i> تاريخ الإرسال <span class="text-danger">*</span></label>
+   <input name="send_date" type="date" class="form-control" required></div>
+  <div class="col-md-3 mb-2"><label><i class="bi bi-clock"></i> ساعة الإرسال <span class="text-danger">*</span></label>
+   <input name="send_time" type="time" class="form-control" value="12:00" required></div>
+  <div class="col-md-3 mb-2"><label><i class="bi bi-reply-fill text-success"></i> تاريخ التسليم (الرد) <span class="text-danger">*</span></label>
+   <input name="reply_date" type="date" class="form-control" required></div>
+  <div class="col-md-3 mb-2"><label><i class="bi bi-clock-history"></i> ساعة التسليم <span class="text-danger">*</span></label>
+   <input name="reply_time" type="time" class="form-control" value="12:00" required></div>
  </div>
+ <div class="alert alert-info py-2 small mb-0">
+  <i class="bi bi-info-circle"></i> <b>التواريخ دي هي المعتمدة</b>: الرسائل تتبعت بتاريخ الإرسال،
+  والردود التلقائية توصل بتاريخ التسليم — من داخل الحملة دي فقط.</div>
  {% if departments %}
  <div class="mt-2">
   <label class="mb-1">قالب مختلف لكل قسم (اختياري — الفارغ يستخدم الافتراضي)</label>
@@ -3608,8 +3641,10 @@ CAMPAIGNS_TPL = """
    {% elif c.last_sent %}<i class="bi bi-clock text-muted"></i> {{ c.last_sent }}
    {% else %}<span class="text-muted">—</span>{% endif %}</td>
   <td class="small text-nowrap">
-   {% if c.last_reply %}<i class="bi bi-reply-fill text-success"></i> {{ c.last_reply }}
-   {% else %}<span class="text-muted">— لا ردود بعد</span>{% endif %}</td>
+   {% if c.reply_date %}<i class="bi bi-reply-fill text-success"></i> {{ c.reply_date }} {{ c.reply_time }}
+    {% if c.last_reply %}<span class="badge bg-success ms-1" title="وصل فعلاً">✓</span>{% endif %}
+   {% elif c.last_reply %}<i class="bi bi-reply-fill text-success"></i> {{ c.last_reply }}
+   {% else %}<span class="text-muted">—</span>{% endif %}</td>
   <td class="text-nowrap">
    <a class="btn btn-sm btn-outline-primary" href="{{ url_for('campaign_detail', cid=c.id) }}">تفاصيل</a>
    {% if c.status=='active' %}
@@ -7253,7 +7288,14 @@ def add_campaign():
     flt = f.get("filter", "").strip().lower()
     scope_acc = (f.get("scope_account") or "").strip()
     send_date = (f.get("send_date", "") or "").strip()
-    send_time = (f.get("send_time", "") or "").strip()
+    send_time = (f.get("send_time", "") or "12:00").strip() or "12:00"
+    reply_date = (f.get("reply_date", "") or "").strip()
+    reply_time = (f.get("reply_time", "") or "12:00").strip() or "12:00"
+
+    # تاريخ الإرسال وتاريخ التسليم (الرد) إجباريان — معتمدان من داخل الحملة نفسها
+    if not send_date or not reply_date:
+        flash("لازم تحدّد تاريخ الإرسال وتاريخ التسليم (الرد) للحملة", "error")
+        return redirect(url_for("campaigns"))
 
     conn = get_connection()
     cur = conn.cursor()
@@ -7263,8 +7305,9 @@ def add_campaign():
         flash("القالب غير موجود", "error")
         return redirect(url_for("campaigns"))
 
-    cur.execute("INSERT INTO campaigns (name, template_id, send_date, send_time) VALUES (?, ?, ?, ?)",
-                (name, template_id, send_date, send_time))
+    cur.execute("""INSERT INTO campaigns (name, template_id, send_date, send_time,
+                   reply_date, reply_time) VALUES (?, ?, ?, ?, ?, ?)""",
+                (name, template_id, send_date, send_time, reply_date, reply_time))
     cid = cur.lastrowid
 
     # قوالب الأقسام
