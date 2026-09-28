@@ -1,6 +1,9 @@
 # Email Manager — صورة Docker
 # تشغّل واجهة الويب + سيرفر البريد الداخلي المدمج (SMTP/IMAP) في حاوية واحدة.
-FROM python:3.12-slim
+# نثبّت على bookworm تحديداً حتى نقدر نركّب postgresql-client-16 من مستودع PGDG
+# (نفس نسخة سيرفر Postgres 16 — ضروري لأن أدوات نسخة أحدث تكتب توجيهات لا يقبلها
+#  السيرفر الأقدم وقت الاستعادة).
+FROM python:3.12-slim-bookworm
 
 # إعدادات بايثون نظيفة داخل الحاوية
 ENV PYTHONUNBUFFERED=1 \
@@ -9,11 +12,18 @@ ENV PYTHONUNBUFFERED=1 \
 
 # توقيت السعودية (Asia/Riyadh = UTC+3) — عشان مواعيد الحملات تطابق ساعتك
 ENV TZ=Asia/Riyadh
-# tzdata لتوقيت السعودية + postgresql-client لأدوات النسخ الاحتياطي (pg_dump/pg_restore).
-# نسخة عميل Debian trixie (17) تقدر تعمل dump لسيرفر Postgres 16 بدون مشاكل.
-RUN apt-get update && apt-get install -y --no-install-recommends tzdata postgresql-client \
+# tzdata لتوقيت السعودية + postgresql-client-16 من مستودع PGDG (يطابق سيرفر Postgres 16).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        tzdata curl ca-certificates gnupg \
     && ln -sf /usr/share/zoneinfo/Asia/Riyadh /etc/localtime \
     && echo "Asia/Riyadh" > /etc/timezone \
+    && install -d /usr/share/postgresql-common/pgdg \
+    && curl -fsSL https://www.postgresql.org/media/keys/ACCC4CF8.asc \
+        -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc \
+    && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" \
+        > /etc/apt/sources.list.d/pgdg.list \
+    && apt-get update && apt-get install -y --no-install-recommends postgresql-client-16 \
+    && apt-get purge -y curl gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

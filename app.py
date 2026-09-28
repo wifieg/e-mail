@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.2"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.3"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -6264,16 +6264,21 @@ BACKUPS_TPL = """
 
 <div class="card" style="max-width:820px"><div class="card-body p-0">
  <div class="table-wrap"><table class="table table-hover mb-0 align-middle">
-  <thead><tr><th>الملف</th><th>التاريخ</th><th>الحجم</th><th class="text-end">تحميل</th></tr></thead>
+  <thead><tr><th>الملف</th><th>التاريخ</th><th>الحجم</th>
+   <th class="text-end">إجراءات</th></tr></thead>
   <tbody>
   {% for b in backups %}
    <tr>
     <td class="small" dir="ltr">{{ b.name }}</td>
     <td class="small text-muted">{{ b.mtime }}</td>
     <td class="small">{{ b.size_bytes|filesize }}</td>
-    <td class="text-end"><a class="btn btn-sm btn-outline-primary"
-       href="{{ url_for('backup_download', name=b.name) }}">
-       <i class="bi bi-download"></i></a></td>
+    <td class="text-end text-nowrap">
+     <button class="btn btn-sm btn-outline-danger"
+        onclick="askRestore('{{ b.name }}')" title="استعادة هذه النسخة">
+        <i class="bi bi-arrow-counterclockwise"></i> استعادة</button>
+     <a class="btn btn-sm btn-outline-primary"
+        href="{{ url_for('backup_download', name=b.name) }}" title="تحميل">
+        <i class="bi bi-download"></i></a></td>
    </tr>
   {% else %}
    <tr><td colspan="4" class="text-center text-muted py-4">
@@ -6282,6 +6287,25 @@ BACKUPS_TPL = """
   </tbody>
  </table></div>
 </div></div>
+
+<form id="restoreForm" method="post" action="{{ url_for('backup_restore') }}" class="d-none">
+ <input type="hidden" name="name" id="restoreName">
+ <input type="hidden" name="confirm" id="restoreConfirm">
+</form>
+<script>
+function askRestore(name){
+  var msg = "⚠️ تحذير: الاستعادة ستستبدل كل البيانات الحالية بمحتوى النسخة:\\n\\n"
+    + name + "\\n\\n"
+    + "(سيتم أخذ نسخة أمان تلقائية قبل الاستعادة)\\n\\n"
+    + "للتأكيد اكتب كلمة: استعادة";
+  var ans = prompt(msg, "");
+  if(ans === null) return;
+  if(ans.trim() !== "استعادة"){ alert("كلمة التأكيد غير صحيحة — أُلغيت الاستعادة."); return; }
+  document.getElementById('restoreName').value = name;
+  document.getElementById('restoreConfirm').value = ans.trim();
+  document.getElementById('restoreForm').submit();
+}
+</script>
 {% endblock %}
 """
 
@@ -7047,6 +7071,45 @@ def create_backup():
     return True, "تم إنشاء نسخة احتياطية: %s" % fname, fname
 
 
+def restore_backup(name):
+    """يستعيد قاعدة البيانات من نسخة احتياطية موجودة. يعيد (ok, msg).
+    يأخذ نسخة أمان تلقائية قبل الاستعادة، والاستعادة ذرّية (كلها أو لا شيء)."""
+    safe = os.path.basename(name)
+    if not re.fullmatch(r"emailmanager_\d{8}_\d{6}\.(dump|db)", safe):
+        return False, "اسم ملف غير صالح"
+    path = os.path.join(BACKUP_DIR, safe)
+    if not os.path.isfile(path):
+        return False, "الملف غير موجود"
+    # نسخة أمان قبل الاستعادة (نتجاهل فشلها حتى لا نمنع الاستعادة)
+    try:
+        create_backup()
+    except Exception:  # noqa: BLE001
+        log.exception("safety backup before restore failed")
+    if USE_PG:
+        if not safe.endswith(".dump"):
+            return False, "هذه النسخة ليست بصيغة Postgres"
+        try:
+            r = subprocess.run(
+                ["pg_restore", "--clean", "--if-exists", "--no-owner",
+                 "--single-transaction", "--dbname", PG_DSN, path],
+                capture_output=True, text=True, timeout=600)
+        except FileNotFoundError:
+            return False, "أداة pg_restore غير مثبتة داخل الحاوية"
+        except subprocess.TimeoutExpired:
+            return False, "انتهت مهلة الاستعادة"
+        if r.returncode != 0:
+            return False, "فشلت الاستعادة (تم الإبقاء على البيانات الحالية): " + \
+                (r.stderr.strip()[:300] or "خطأ غير معروف")
+    else:
+        if not safe.endswith(".db"):
+            return False, "هذه النسخة ليست بصيغة SQLite"
+        try:
+            shutil.copyfile(path, DB_NAME)
+        except Exception as e:  # noqa: BLE001
+            return False, "فشلت الاستعادة: %s" % e
+    return True, "تمت الاستعادة بنجاح من: %s" % safe
+
+
 @app.route("/backups")
 def backups_page():
     return render("backups.html", "النسخ الاحتياطي",
@@ -7058,6 +7121,16 @@ def backups_page():
 @app.route("/backups/now", methods=["POST"])
 def backup_now():
     ok, msg, _ = create_backup()
+    flash(msg, "success" if ok else "error")
+    return redirect(url_for("backups_page"))
+
+
+@app.route("/backups/restore", methods=["POST"])
+def backup_restore():
+    if (request.form.get("confirm", "") or "").strip() != "استعادة":
+        flash("لم تتم الاستعادة — اكتب كلمة التأكيد «استعادة» بالضبط.", "error")
+        return redirect(url_for("backups_page"))
+    ok, msg = restore_backup(request.form.get("name", ""))
     flash(msg, "success" if ok else "error")
     return redirect(url_for("backups_page"))
 
