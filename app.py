@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.17"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.18"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -6949,6 +6949,28 @@ BACKUPS_TPL = """
  <input type="hidden" name="name" id="restoreName">
  <input type="hidden" name="confirm" id="restoreConfirm">
 </form>
+
+<div class="card border-danger mt-4" style="max-width:820px">
+ <div class="card-header bg-danger text-white py-2">
+  <i class="bi bi-exclamation-octagon-fill"></i> منطقة الخطر — مسح الرسائل للبدء من جديد</div>
+ <div class="card-body">
+  <div class="small text-muted mb-2">يمسح <b>كل الرسائل المرسلة والمستقبلة</b> لكل الصناديق
+   (الرئيسي والفرعي) + طابور وسجل الردود + سجل الإرسال — عشان تبدأ تست نظيف.
+   <b>الحسابات والموظفون والحملات والقوالب تفضل زي ما هي.</b>
+   (تُؤخذ نسخة أمان تلقائية قبل المسح.)</div>
+  <form method="post" action="{{ url_for('reset_mail_data') }}"
+        onsubmit="return confirm('⚠️ مسح كل الرسائل المرسلة والمستقبلة للجميع؟ لا يمكن التراجع (لكن فيه نسخة أمان).');">
+   <label class="small d-block mb-2">
+    <input type="checkbox" name="reset_campaigns" value="1">
+    صفّر حالة الحملات كمان (علشان أقدر أبعتها من جديد)</label>
+   <div class="d-flex gap-2 align-items-center flex-wrap">
+    <input name="confirm" class="form-control form-control-sm" style="max-width:220px"
+       placeholder="اكتب: مسح" autocomplete="off" required>
+    <button class="btn btn-danger btn-sm"><i class="bi bi-trash3"></i> مسح الرسائل الآن</button>
+   </div>
+  </form>
+ </div>
+</div>
 <script>
 function askRestore(name){
   var msg = "⚠️ تحذير: الاستعادة ستستبدل كل البيانات الحالية بمحتوى النسخة:\\n\\n"
@@ -7811,6 +7833,53 @@ def backup_restore():
         return redirect(url_for("backups_page"))
     ok, msg = restore_backup(request.form.get("name", ""))
     flash(msg, "success" if ok else "error")
+    return redirect(url_for("backups_page"))
+
+
+@app.route("/backups/reset-mail", methods=["POST"])
+def reset_mail_data():
+    """مسح كل الرسائل المرسلة والمستقبلة (الرئيسي والفرعي) للبدء من جديد.
+    يأخذ نسخة أمان أولاً. اختيارياً يصفّر حالة الحملات لإعادة إرسالها."""
+    f = request.form
+    if (f.get("confirm", "") or "").strip() != "مسح":
+        flash("لم يتم المسح — اكتب كلمة التأكيد «مسح» بالضبط.", "error")
+        return redirect(url_for("backups_page"))
+    # نسخة أمان قبل المسح (نتجاهل فشلها حتى لا نمنع العملية)
+    try:
+        create_backup()
+    except Exception:  # noqa: BLE001
+        log.exception("safety backup before reset-mail failed")
+    conn = get_connection()
+    cur = conn.cursor()
+
+    def _count(sql):
+        try:
+            return cur.execute(sql).fetchone()[0]
+        except Exception:  # noqa: BLE001
+            return 0
+    n_msgs = _count("SELECT COUNT(*) FROM mail_messages")
+    n_sent = _count("SELECT COUNT(*) FROM sent_emails")
+    n_rep = _count("SELECT COUNT(*) FROM emp_replies")
+    for sql in ("DELETE FROM mail_messages",
+                "DELETE FROM reverse_queue",
+                "DELETE FROM emp_replies",
+                "DELETE FROM sent_emails"):
+        try:
+            cur.execute(sql)
+        except Exception:  # noqa: BLE001
+            log.exception("reset-mail: %s", sql)
+    reset_camps = f.get("reset_campaigns") == "1"
+    if reset_camps:
+        try:
+            cur.execute("UPDATE campaign_recipients SET status='pending', attempts=0, error=NULL")
+            cur.execute("UPDATE campaigns SET status='active'")
+        except Exception:  # noqa: BLE001
+            log.exception("reset-mail: reset campaigns")
+    conn.commit()
+    conn.close()
+    extra = " · وأُعيد ضبط الحملات للإرسال من جديد" if reset_camps else ""
+    flash("تم مسح الرسائل للبدء من جديد: %d رسالة (وارد/صادر) · %d سجل إرسال · %d رد%s "
+          "(أُخذت نسخة أمان قبل المسح)" % (n_msgs, n_sent, n_rep, extra), "success")
     return redirect(url_for("backups_page"))
 
 
