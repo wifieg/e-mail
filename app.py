@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.4"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.5"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3964,6 +3964,19 @@ CAMPAIGNS_TPL = """
 </form>
 {% endif %}
 
+<div class="d-flex align-items-center gap-2 mb-2 flex-wrap">
+ <div class="input-group input-group-sm" style="width:auto">
+  <span class="input-group-text"><i class="bi bi-search"></i></span>
+  <input id="campSearch" class="form-control" placeholder="بحث باسم الحملة أو القالب…"
+         onkeyup="campFilter()" autocomplete="off" style="min-width:220px"></div>
+ <select id="campStatus" class="form-select form-select-sm" style="width:auto" onchange="campFilter()">
+  <option value="">كل الحالات</option>
+  <option value="active">نشطة</option>
+  <option value="paused">متوقفة</option>
+  <option value="completed">مكتملة</option>
+ </select>
+ <span class="small text-muted" id="campCount"></span>
+</div>
 <div class="d-flex align-items-center gap-2 mb-1">
  <span class="small text-muted"><i class="bi bi-arrow-repeat"></i> تحديث تلقائي كل ٥ ثوانٍ</span>
  <span class="small text-success" id="campLive"></span>
@@ -3974,7 +3987,7 @@ CAMPAIGNS_TPL = """
    <th>التقدّم</th><th>تاريخ الإرسال</th><th>تاريخ الاستقبال (الرد)</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for c in rows %}
- <tr>
+ <tr data-s="{{ (c.name ~ ' ' ~ c.template_name)|lower }}" data-status="{{ c.status }}">
   <td>{{ c.id }}</td><td class="fw-semibold">{{ c.name }}</td>
   <td>{{ c.template_name }}{% if c.dept_count %}
       <span class="badge bg-info">+{{ c.dept_count }} قسم</span>{% endif %}</td>
@@ -4040,6 +4053,22 @@ CAMPAIGNS_TPL = """
 </div></div></div>
 {% endfor %}
 <script>
+// بحث/فلترة قائمة الحملات (بالاسم/القالب + الحالة)
+function campFilter(){
+ var q=(document.getElementById('campSearch').value||'').trim().toLowerCase();
+ var st=document.getElementById('campStatus').value;
+ var rows=document.querySelectorAll('#campTableWrap tbody tr'), shown=0;
+ rows.forEach(function(r){
+  if(!r.dataset.s && !r.dataset.status) return;   // صف «لا توجد حملات»
+  var hitQ = !q || (r.dataset.s||'').indexOf(q)!==-1;
+  var hitS = !st || r.dataset.status===st;
+  var hit = hitQ && hitS;
+  r.style.display = hit ? '' : 'none';
+  if(hit) shown++;
+ });
+ var el=document.getElementById('campCount');
+ if(el) el.textContent=(q||st)?('ظهر '+shown+' حملة'):'';
+}
 // تحديث لحظي لجدول الحملات (التقدّم + التواريخ) بدون إعادة تحميل الصفحة
 (function(){
  var wrap=document.getElementById('campTableWrap');
@@ -4052,6 +4081,7 @@ CAMPAIGNS_TPL = """
      var fresh=doc.getElementById('campTableWrap');
      if(fresh && fresh.innerHTML!==wrap.innerHTML){
        wrap.innerHTML=fresh.innerHTML;
+       campFilter();   // أعِد تطبيق الفلتر بعد التحديث اللحظي
        var live=document.getElementById('campLive');
        if(live){ live.textContent='✓ تم التحديث'; setTimeout(function(){live.textContent='';},1500); }
      }
@@ -4137,6 +4167,8 @@ CAMPAIGN_DETAIL_TPL = """
  <a class="btn btn-outline-danger" href="{{ url_for('campaign_action', cid=c.id, act='retry_failed') }}">
   إعادة محاولة الفاشل ({{ counts.failed }})</a>
  {% endif %}
+ <a class="btn btn-outline-success" href="{{ url_for('campaign_export', cid=c.id) }}">
+  <i class="bi bi-download"></i> تصدير CSV</a>
  <a class="btn btn-outline-secondary" href="{{ url_for('campaigns') }}">رجوع</a>
 </div>
 {% if counts.pending %}
@@ -8205,6 +8237,32 @@ def campaign_duplicate(cid):
     flash("اتعملت نسخة من الحملة بـ %d مستلماً — عدّل التاريخ لو حبيت من «تعديل التواريخ»."
           % len(emp_ids), "success")
     return redirect(url_for("campaign_detail", cid=new_cid))
+
+
+@app.route("/campaigns/<int:cid>/export")
+def campaign_export(cid):
+    """يصدّر نتائج الحملة (المستلمون وحالاتهم) كملف CSV."""
+    conn = get_connection()
+    c = conn.execute("SELECT name FROM campaigns WHERE id=?", (cid,)).fetchone()
+    if not c:
+        conn.close()
+        abort(404)
+    rows = conn.execute("""
+        SELECT e.name, e.email, e.department, r.status, r.attempts, r.error, r.sent_at
+        FROM campaign_recipients r JOIN employees e ON e.id=r.employee_id
+        WHERE r.campaign_id=? ORDER BY r.status, e.name""", (cid,)).fetchall()
+    conn.close()
+    status_ar = {"sent": "تم الإرسال", "pending": "معلّق", "failed": "فشل"}
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["الاسم", "البريد", "القسم", "الحالة", "المحاولات", "الخطأ", "وقت الإرسال"])
+    for r in rows:
+        w.writerow([r["name"], r["email"], r["department"] or "",
+                    status_ar.get(r["status"], r["status"]),
+                    r["attempts"], r["error"] or "", r["sent_at"] or ""])
+    fname = "campaign_%d.csv" % cid
+    return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=%s" % fname})
 
 
 def _run_batch_bg():
