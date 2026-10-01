@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.7"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.8"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -989,22 +989,31 @@ def _text_to_html(text):
     return "<br>".join(_html.escape(line) for line in (text or "").split("\n"))
 
 
-LOGO_MAX_BYTES = 600 * 1024   # أقصى حجم للوجو
+LOGO_MAX_BYTES = 3 * 1024 * 1024   # أقصى حجم للوجو (3 ميجا)
 
 
-def _logo_data_uri(file_storage):
-    """يقرأ صورة مرفوعة ويعيدها كـ data URI (base64) للتخزين والتضمين. '' لو مفيش/غير صالح."""
+def _read_logo(file_storage):
+    """يقرأ صورة مرفوعة. يعيد (data_uri, error). error='' عند النجاح، و('','') لو مفيش ملف."""
     if not file_storage or not file_storage.filename:
-        return ""
+        return "", ""
     raw = file_storage.read()
-    if not raw or len(raw) > LOGO_MAX_BYTES:
-        return ""
-    ext = file_storage.filename.rsplit(".", 1)[-1].lower()
+    if not raw:
+        return "", "الملف فارغ"
+    if len(raw) > LOGO_MAX_BYTES:
+        return "", ("حجم الصورة %.1f ميجا — الأقصى %d ميجا (صغّر الصورة وحاول تاني)"
+                    % (len(raw) / 1048576.0, LOGO_MAX_BYTES // 1048576))
+    ext = file_storage.filename.rsplit(".", 1)[-1].lower() if "." in file_storage.filename else ""
     mime = {"png": "image/png", "jpg": "image/jpeg", "jpeg": "image/jpeg",
             "gif": "image/gif", "webp": "image/webp", "svg": "image/svg+xml"}.get(ext)
     if not mime:
-        return ""
-    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
+        return "", ("صيغة غير مدعومة (%s) — المسموح: PNG, JPG, GIF, WEBP, SVG"
+                    % (ext or "بدون امتداد"))
+    return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii")), ""
+
+
+def _logo_data_uri(file_storage):
+    """غلاف قديم: يعيد data URI فقط (أو '' لو غير صالح)."""
+    return _read_logo(file_storage)[0]
 
 
 def _effective_logo(account_logo=""):
@@ -3848,7 +3857,7 @@ TEMPLATES_TPL = """
       <label class="small text-muted mb-1">الموقع الموحّد</label>
       <input name="company_website" class="form-control" dir="ltr" value="{{ company_website }}"></div>
      <div class="col-md-4">
-      <label class="small text-muted mb-1">لوجو موحّد لكل التواقيع (أقصى 600KB)</label>
+      <label class="small text-muted mb-1">لوجو موحّد لكل التواقيع (أقصى 3 ميجا · PNG/JPG/SVG)</label>
       <input name="logo" type="file" accept="image/*" class="form-control form-control-sm sig-file"></div>
     </div>
     <div class="mt-3">
@@ -3876,6 +3885,10 @@ TEMPLATES_TPL = """
    <div class="sig-hint">ده شكل التوقيع اللي بيتبعت فعلاً — الاسم/الوظيفة/الإيميل/القسم بتتعبّى
     من بيانات كل موظف، والهاتف/الموقع/اللوجو موحّدين من فوق. (الوظيفة = خانة «المنصب»،
     مكان 📍 = خانة «القسم».)</div>
+   {% if not global_logo %}
+   <div class="alert alert-warning py-2 small mb-2"><i class="bi bi-exclamation-triangle-fill"></i>
+    لسه مرفعتش <b>لوجو موحّد</b> — ارفع صورة من كارت «بيانات ثابتة» فوق عشان تظهر على شمال التوقيع.</div>
+   {% endif %}
    <div style="background:#eceff1;border-radius:10px;padding:24px;overflow:auto">
     {{ rich_preview|safe }}
    </div>
@@ -8143,8 +8156,10 @@ def save_company_info():
         set_setting("global_logo", "")
         flash("تم حذف اللوجو الموحّد + حفظ الهاتف والموقع", "success")
     else:
-        logo = _logo_data_uri(request.files.get("logo"))
-        if logo:
+        logo, err = _read_logo(request.files.get("logo"))
+        if err:
+            flash("لم يُرفع اللوجو: " + err + " — (تم حفظ الهاتف والموقع)", "error")
+        elif logo:
             set_setting("global_logo", logo)
             flash("تم حفظ اللوجو الموحّد + الهاتف والموقع لكل التواقيع", "success")
         else:
