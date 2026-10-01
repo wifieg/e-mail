@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.10"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.11"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -644,6 +644,7 @@ def init_db():
         "company_website": "www.solutionstech.sa",  # موقع موحّد يظهر في {website}
         "global_logo": "",                        # لوجو موحّد (data URI) لكل التواقيع
         "signature_style": "rich",                # rich = التصميم الاحترافي · text = نصّي بسيط
+        "auto_backup_hours": "6",                 # نسخة احتياطية تلقائية كل كام ساعة (0=إيقاف)
     }
     for k, v in defaults.items():
         cur.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)", (k, v))
@@ -2848,6 +2849,103 @@ def _scheduled_send_dt():
         return None
 
 
+# ------------------------------------------------------------------ المراقبة الذاتية + النسخ التلقائي
+_health = {
+    "db":   {"ok": True, "msg": "—", "ts": ""},
+    "smtp": {"ok": True, "msg": "—", "ts": ""},
+    "imap": {"ok": True, "msg": "—", "ts": ""},
+    "last_backup": "",
+    "last_check": "",
+    "fixes": [],   # آخر إجراءات الإصلاح الذاتي
+}
+_health_lock = threading.Lock()
+_last_health_check = [0.0]
+_last_autobackup = [0.0]
+
+
+def _port_listening(port, host="127.0.0.1", timeout=2):
+    """هل فيه حاجة بتسمع على المنفذ ده؟"""
+    try:
+        with _socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def _restart_int_server(port, handler, name):
+    """يعيد تشغيل سيرفر داخلي (يُستدعى فقط لو مفيش حد بيسمع على المنفذ)."""
+    try:
+        threading.Thread(target=_int_server_loop, args=(port, handler, name),
+                         daemon=True).start()
+        _stop_event.wait(1.0)
+        return _port_listening(port)
+    except Exception:  # noqa: BLE001
+        log.exception("فشل إعادة تشغيل سيرفر %s", name)
+        return False
+
+
+def health_tick():
+    """فحص صحّة النظام + إصلاح ذاتي: قاعدة البيانات + سيرفرات البريد الداخلية."""
+    now = datetime.now().isoformat(timespec="seconds")
+    fixes = []
+    # 1) قاعدة البيانات
+    try:
+        c = get_connection()
+        c.execute("SELECT 1").fetchone()
+        c.close()
+        db_ok, db_msg = True, "متصلة"
+    except Exception as exc:  # noqa: BLE001
+        db_ok, db_msg = False, str(exc)[:140]
+        log.warning("فحص الصحّة: قاعدة البيانات متعثّرة — %s", db_msg)
+    # 2) سيرفرات البريد الداخلية (إعادة تشغيل تلقائي لو وقعت)
+    smtp_ok = imap_ok = True
+    if INT_MAIL_ENABLED:
+        smtp_ok = _port_listening(INT_SMTP_PORT)
+        if not smtp_ok:
+            smtp_ok = _restart_int_server(INT_SMTP_PORT, _int_smtp_client, "SMTP")
+            fixes.append("إعادة تشغيل سيرفر SMTP الداخلي" + ("" if smtp_ok else " (لسه متوقف)"))
+        imap_ok = _port_listening(INT_IMAP_PORT)
+        if not imap_ok:
+            imap_ok = _restart_int_server(INT_IMAP_PORT, _int_imap_client, "IMAP")
+            fixes.append("إعادة تشغيل سيرفر IMAP الداخلي" + ("" if imap_ok else " (لسه متوقف)"))
+    with _health_lock:
+        _health["db"] = {"ok": db_ok, "msg": db_msg, "ts": now}
+        _health["smtp"] = {"ok": smtp_ok, "msg": "يعمل" if smtp_ok else "متوقف", "ts": now}
+        _health["imap"] = {"ok": imap_ok, "msg": "يعمل" if imap_ok else "متوقف", "ts": now}
+        _health["last_check"] = now
+        for fx in fixes:
+            _health["fixes"].insert(0, {"ts": now, "action": fx})
+        _health["fixes"] = _health["fixes"][:20]
+    for fx in fixes:
+        log.warning("إصلاح ذاتي: %s", fx)
+    return fixes
+
+
+def autobackup_tick():
+    """نسخة احتياطية تلقائية كل عدد ساعات (من إعداد auto_backup_hours، 0=إيقاف)."""
+    try:
+        hours = int(get_setting("auto_backup_hours", "6"))
+    except (TypeError, ValueError):
+        hours = 6
+    if hours <= 0:
+        return
+    nowt = time.time()
+    if _last_autobackup[0] and (nowt - _last_autobackup[0]) < hours * 3600:
+        return
+    _last_autobackup[0] = nowt
+    try:
+        ok, msg, fname = create_backup()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("فشل النسخ الاحتياطي التلقائي: %s", exc)
+        return
+    if ok:
+        with _health_lock:
+            _health["last_backup"] = datetime.now().isoformat(timespec="seconds")
+        log.info("نسخة احتياطية تلقائية تمّت: %s", fname)
+    else:
+        log.warning("فشل النسخ الاحتياطي التلقائي: %s", msg)
+
+
 def scheduler_loop():
     log.info("بدأ المُجدوِل (فحص كل %ds)", SCHEDULER_TICK)
     while not _stop_event.is_set():
@@ -2884,6 +2982,11 @@ def scheduler_loop():
                     process_batch()
             # الرد العكسي يعمل باستمرار: فحص دوري + إرسال ما حان موعده
             reverse_tick()
+            # مراقبة ذاتية (كل ~60 ثانية) + نسخ احتياطي تلقائي
+            if time.time() - _last_health_check[0] >= 60:
+                _last_health_check[0] = time.time()
+                health_tick()
+                autobackup_tick()
         except Exception:  # noqa: BLE001
             log.exception("خطأ في حلقة المُجدوِل")
         _stop_event.wait(SCHEDULER_TICK)
@@ -3414,6 +3517,31 @@ INDEX_TPL = """
      class="text-decoration-none">{{ db_info.last_backup }}</a>
    {% else %}<a href="{{ url_for('backups_page') }}" class="text-danger text-decoration-none">
      لا توجد</a>{% endif %}</div></div>
+</div></div>
+{% endif %}
+{% if health %}
+<div class="card mb-2" style="max-width:640px"><div class="card-body py-2">
+ <div class="d-flex align-items-center gap-2 mb-2">
+  <span style="width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+    background:#16a34a1f;color:#16a34a;font-size:1.05rem"><i class="bi bi-heart-pulse-fill"></i></span>
+  <div class="fw-bold">صحة النظام
+   <span class="text-muted small fw-normal">· آخر فحص {{ health.last_check or '—' }}</span></div>
+ </div>
+ <div class="d-flex gap-4 flex-wrap small">
+  {% for k, lbl in [('db','قاعدة البيانات'), ('smtp','سيرفر الإرسال'), ('imap','سيرفر الاستقبال')] %}
+  <div><span class="status-dot {{ 'on' if health[k].ok else 'off' }}">
+   {{ lbl }}: {{ 'سليم' if health[k].ok else 'مشكلة' }}</span></div>
+  {% endfor %}
+ </div>
+ {% if health.fixes %}
+ <div class="mt-2 small"><span class="text-muted">آخر إصلاحات ذاتية:</span>
+  {% for fx in health.fixes %}
+   <div class="text-success"><i class="bi bi-wrench-adjustable"></i> {{ fx.ts }} — {{ fx.action }}</div>
+  {% endfor %}
+ </div>
+ {% else %}
+ <div class="mt-1 text-muted small"><i class="bi bi-check-circle"></i> كل الخدمات تعمل — لا مشاكل.</div>
+ {% endif %}
 </div></div>
 {% endif %}
 <div class="card"><div class="card-body">
@@ -7389,6 +7517,10 @@ def index():
     db_info["last_backup"] = _bks[0]["mtime"] if _bks else None
     db_info["backup_count"] = len(_bks)
     conn.close()
+    with _health_lock:
+        health = {"db": dict(_health["db"]), "smtp": dict(_health["smtp"]),
+                  "imap": dict(_health["imap"]), "last_check": _health["last_check"],
+                  "fixes": list(_health["fixes"][:5])}
     cards = [
         {"label": "الموظفين", "value": total_emp, "icon": "bi-people", "color": "#667eea",
          "href": url_for("employees")},
@@ -7403,7 +7535,8 @@ def index():
         {"label": "أقسام الإرسال", "value": groups_ct, "icon": "bi-diagram-3",
          "color": "#805ad5", "href": url_for("distribution")},
     ]
-    return render("index.html", "لوحة التحكم", cards=cards, recent=recent, db_info=db_info)
+    return render("index.html", "لوحة التحكم", cards=cards, recent=recent, db_info=db_info,
+                  health=health)
 
 
 # ------------------------------------------------------------------ النسخ الاحتياطي
