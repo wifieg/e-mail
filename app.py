@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.11"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.12"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3721,6 +3721,8 @@ EMPLOYEES_TPL = """
 <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add">
   <i class="bi bi-plus-circle"></i> إضافة موظف</button>
+ <a class="btn btn-outline-primary btn-sm" href="{{ url_for('employees_import_template') }}">
+  <i class="bi bi-file-earmark-arrow-down"></i> تحميل نموذج الاستيراد</a>
  <form method="POST" action="{{ url_for('import_employees') }}" enctype="multipart/form-data"
        class="d-flex gap-2">
   <input type="file" name="file" accept=".csv" required class="form-control form-control-sm" style="width:auto">
@@ -3731,10 +3733,10 @@ EMPLOYEES_TPL = """
  <a class="btn btn-success btn-sm" href="{{ url_for('connect_all_employees') }}">
   <i class="bi bi-plug"></i> اتصال بصناديق الكل + تحميل الوارد/المُرسَل</a>
 </div>
-<p class="text-muted small">صيغة CSV: <code>name,email,title,department,phone,password,iqama,emp_number</code> —
- أول عمودين مطلوبان، والباقي اختياري، ويُتجاهل صف العنوان. عمود <code>password</code>
- لبيانات دخول صندوق الموظف (للرد العكسي).
- قالب التوقيع تضبطه من صفحة <a href="{{ url_for('templates_page') }}">توقيع الموظفين</a>.</p>
+<p class="text-muted small">اضغط <b>«تحميل نموذج الاستيراد»</b> لتنزيل ملف بالأعمدة الجاهزة
+ (<code>اسم المشترك · رقم الهوية · المهنة · Email</code>)، املأ الداتا وامسح صف المثال ثم ارفعه بـ «استيراد CSV».
+ البرنامج يفهم أسماء الأعمدة عربي أو إنجليزي، وأي موظف جديد ياخد كلمة مرور افتراضية (022001)
+ وتوقيعه بيتولّد تلقائياً من <a href="{{ url_for('templates_page') }}">التصميم الاحترافي</a>.</p>
 <div class="mb-3" style="max-width:420px">
  <div class="input-group">
   <span class="input-group-text"><i class="bi bi-search"></i></span>
@@ -7938,6 +7940,38 @@ def edit_employee(eid):
     return redirect(url_for("employees"))
 
 
+# أسماء الأعمدة المقبولة في ملف الاستيراد (عربي/إنجليزي) → الحقل
+_IMPORT_ALIASES = {
+    "name":       {"name", "الاسم", "اسم", "اسم المشترك", "اسم الموظف", "المشترك"},
+    "email":      {"email", "e-mail", "mail", "البريد", "بريد", "الايميل", "الإيميل",
+                   "البريد الالكتروني", "البريد الإلكتروني"},
+    "iqama":      {"iqama", "id", "رقم الهوية", "الهوية", "هوية", "رقم الاقامة",
+                   "رقم الإقامة", "الاقامة", "الإقامة"},
+    "title":      {"title", "job", "المهنة", "المنصب", "الوظيفة", "الصفة"},
+    "department": {"department", "dept", "القسم", "الاداره", "الإدارة"},
+    "phone":      {"phone", "mobile", "tel", "الهاتف", "الجوال", "التليفون", "موبايل",
+                   "رقم الهاتف", "رقم الجوال"},
+    "password":   {"password", "pass", "كلمة المرور", "الباسورد", "باسورد", "كلمة السر"},
+    "emp_number": {"emp_number", "الرقم الوظيفي", "رقم الموظف", "الرقم الوظيفى"},
+}
+
+
+def _import_colmap(header):
+    """يبني خريطة {حقل: فهرس العمود} من صف العناوين. يعيد {} لو مفيش عناوين واضحة."""
+    colmap = {}
+    for idx, cell in enumerate(header):
+        h = (cell or "").strip().lower()
+        if not h:
+            continue
+        for field, aliases in _IMPORT_ALIASES.items():
+            if field in colmap:
+                continue
+            if h in {a.lower() for a in aliases}:
+                colmap[field] = idx
+                break
+    return colmap
+
+
 @app.route("/employees/import", methods=["POST"])
 def import_employees():
     file = request.files.get("file")
@@ -7949,23 +7983,38 @@ def import_employees():
         dialect = csv.Sniffer().sniff(raw[:2048], delimiters=",;\t")
     except csv.Error:
         dialect = csv.excel
-    reader = csv.reader(io.StringIO(raw), dialect)
+    all_rows = [r for r in csv.reader(io.StringIO(raw), dialect)]
     conn = get_connection()
     cur = conn.cursor()
     added = updated = skipped = 0
-    for i, row in enumerate(reader):
-        if len(row) < 2:
-            continue
+
+    # وضع العناوين: لو أول صف فيه أسماء أعمدة معروفة (name+email) نقرأ حسبها
+    colmap = _import_colmap(all_rows[0]) if all_rows else {}
+    header_mode = ("name" in colmap and "email" in colmap)
+    data_rows = all_rows[1:] if header_mode else all_rows
+
+    for i, row in enumerate(data_rows):
         cells = [c.strip() for c in row]
-        name, email = cells[0], cells[1].lower()
-        title = cells[2] if len(cells) > 2 else ""
-        department = cells[3] if len(cells) > 3 else ""
-        phone = cells[4] if len(cells) > 4 else ""
-        pw = cells[5] if len(cells) > 5 else ""
-        iqama = cells[6] if len(cells) > 6 else ""
-        emp_number = cells[7] if len(cells) > 7 else ""
-        if i == 0 and "@" not in email:          # صف عنوان
-            continue
+        if header_mode:
+            def g(field):
+                idx = colmap.get(field)
+                return cells[idx] if (idx is not None and idx < len(cells)) else ""
+            name, email = g("name"), g("email").lower()
+            title, department = g("title"), g("department")
+            phone, pw = g("phone"), g("password")
+            iqama, emp_number = g("iqama"), g("emp_number")
+        else:
+            if len(cells) < 2:
+                continue
+            name, email = cells[0], cells[1].lower()
+            title = cells[2] if len(cells) > 2 else ""
+            department = cells[3] if len(cells) > 3 else ""
+            phone = cells[4] if len(cells) > 4 else ""
+            pw = cells[5] if len(cells) > 5 else ""
+            iqama = cells[6] if len(cells) > 6 else ""
+            emp_number = cells[7] if len(cells) > 7 else ""
+            if i == 0 and "@" not in email:          # صف عنوان غير معروف
+                continue
         if not name or "@" not in email:
             skipped += 1
             continue
@@ -7988,6 +8037,19 @@ def import_employees():
     conn.close()
     flash(f"استيراد: {added} جديد، {updated} محدّث، {skipped} متخطّى", "success")
     return redirect(url_for("employees"))
+
+
+@app.route("/employees/import-template")
+def employees_import_template():
+    """ينزّل نموذج استيراد فارغ بالأعمدة العربية الجاهزة للتعبئة."""
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow(["اسم المشترك", "رقم الهوية", "المهنة", "Email"])
+    # صف مثال توضيحي (امسحه قبل الرفع)
+    w.writerow(["محمد أحمد", "1234567890", "محاسب", "mohamed@example.com"])
+    return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
+                    headers={"Content-Disposition":
+                             "attachment; filename=employees_import_template.csv"})
 
 
 @app.route("/employees/export")
