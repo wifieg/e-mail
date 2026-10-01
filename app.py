@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.15"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.16"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -634,6 +634,7 @@ def init_db():
         "reverse_batch_size": "20",      # عدد صناديق الموظفين المفحوصة كل دورة
         "reverse_min_delay": "8",
         "reverse_max_delay": "25",
+        "reverse_delay_seconds": "20",   # الرد يوصل بعد كام ثانية من استلام الرسالة
         "emp_imap_server": "",     # فارغ = اكتشاف تلقائي من نطاق بريد كل موظف
         "emp_imap_port": "",
         "emp_smtp_server": "",
@@ -2657,8 +2658,13 @@ def scan_reverse_internal(conn):
                 received = datetime.fromisoformat(m["created_at"]) if m["created_at"] else now
             except ValueError:
                 received = now
-            # لو الرسالة من حملة لها تاريخ تسليم محدّد → الرد يوصل في التاريخ ده بالظبط
-            due = None
+            # الافتراضي: الرد يوصل بعد N ثانية من استلام الرسالة (N=20 افتراضياً)
+            delay_secs = max(0, _gi("reverse_delay_seconds", 20))
+            base_due = received + timedelta(seconds=delay_secs)
+            # لو الرسالة من حملة لها تاريخ تسليم محدّد:
+            #  - تاريخ قديم (باك-ديت) → يُحترم كما هو (الرد يوصل بنفس التاريخ القديم)
+            #  - تاريخ الآن/قريب → نطبّق تأخير الـ20 ثانية بعد الاستلام
+            campaign_due = None
             cid = m["campaign_id"] if "campaign_id" in m.keys() else None
             if cid:
                 crow = conn.execute("SELECT reply_date, reply_time FROM campaigns WHERE id=?",
@@ -2666,11 +2672,13 @@ def scan_reverse_internal(conn):
                 if crow and (crow["reply_date"] or "").strip():
                     _rt = (crow["reply_time"] or "12:00").strip() or "12:00"
                     try:
-                        due = datetime.fromisoformat(crow["reply_date"].strip() + "T" + _rt)
+                        campaign_due = datetime.fromisoformat(crow["reply_date"].strip() + "T" + _rt)
                     except ValueError:
-                        due = None
-            if due is None:
-                due = received + timedelta(minutes=_reverse_delay_minutes(conn, sender))
+                        campaign_due = None
+            if campaign_due is not None:
+                due = campaign_due if campaign_due <= received else max(campaign_due, base_due)
+            else:
+                due = base_due
             cur = conn.execute("""INSERT OR IGNORE INTO reverse_queue
                 (employee_id, account_email, folder, uid, msgid, subject,
                  received_at, due_at, status)
@@ -3601,7 +3609,8 @@ ACCOUNTS_TPL = """
 <div class="table-wrap">
 <table class="table align-middle">
  <thead><tr><th>البريد</th><th>الاسم الظاهر</th><th>الاتصال</th><th>SMTP</th><th>IMAP</th>
-   <th>التشفير</th><th>أُرسل (ساعة/يوم)</th><th>الموظفين</th><th>نشط</th><th>إجراءات</th></tr></thead>
+   <th>التشفير</th><th>أُرسل (ساعة/يوم)</th><th>الموظفين</th>
+   <th>مُرسَلة</th><th>مُستقبَلة</th><th>نشط</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for a in rows %}
  <tr>
@@ -3618,6 +3627,8 @@ ACCOUNTS_TPL = """
    <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
      data-bs-target="#empof{{ a.id }}">{{ a.employees|length }} موظف</button>
   </td>
+  <td><span class="badge bg-success" title="رسائل أرسلها الحساب">{{ a.sent_ct }}</span></td>
+  <td><span class="badge bg-info text-dark" title="ردود/رسائل وصلت للحساب">{{ a.recv_ct }}</span></td>
   <td>{% if a.active %}<i class="bi bi-check-circle-fill" style="color:var(--ok)"></i>
       {% else %}<i class="bi bi-slash-circle" style="color:#c4c9d2"></i>{% endif %}</td>
   <td class="text-nowrap">
@@ -3633,7 +3644,7 @@ ACCOUNTS_TPL = """
       onclick="return confirm('حذف الحساب؟')"><i class="bi bi-trash"></i></a>
   </td>
  </tr>
- {% else %}<tr><td colspan="10" class="mlist-empty">لا توجد حسابات — أضف حساباتك الخمسة</td></tr>{% endfor %}
+ {% else %}<tr><td colspan="12" class="mlist-empty">لا توجد حسابات — أضف حساباتك الخمسة</td></tr>{% endfor %}
  </tbody>
 </table>
 </div>
@@ -3803,23 +3814,26 @@ EMPLOYEES_TPL = """
 <div class="card card-body py-2 mb-2" id="bulkBar" style="display:none">
  <div class="d-flex align-items-center gap-2 flex-wrap">
   <span class="badge bg-primary" id="bulkCount">0 محدد</span>
-  <select id="bulkAction" class="form-select form-select-sm" style="width:auto"
-     onchange="document.getElementById('bulkAccWrap').style.display=this.value=='move'?'':'none'">
-   <option value="connect">اتصال بالصناديق</option>
-   <option value="login">إنشاء لوج إن</option>
-   <option value="activate">تفعيل</option>
-   <option value="deactivate">إيقاف</option>
-   <option value="move">نقل لحساب رئيسي</option>
-   <option value="delete">حذف</option>
+  <span class="small text-muted">— إجراء جماعي للكل:</span>
+  <button class="btn btn-sm btn-outline-success" onclick="bulkDo('connect')">
+   <i class="bi bi-plug"></i> اتصال/تحديث الصناديق</button>
+  <button class="btn btn-sm btn-outline-primary" onclick="bulkDo('activate')">
+   <i class="bi bi-check-circle"></i> تفعيل</button>
+  <button class="btn btn-sm btn-outline-secondary" onclick="bulkDo('deactivate')">
+   <i class="bi bi-pause-circle"></i> إيقاف</button>
+  <button class="btn btn-sm btn-outline-info" onclick="bulkDo('login')">
+   <i class="bi bi-key"></i> لوج إن</button>
+  <span class="text-muted">|</span>
+  <select id="bulkAccount" class="form-select form-select-sm" style="width:auto">
+   <option value="">— بدون حساب (إلغاء تعيين) —</option>
+   {% for a in accs %}<option value="{{ a.id }}">{{ a.display_name or a.email }}</option>{% endfor %}
   </select>
-  <span id="bulkAccWrap" style="display:none">
-   <select id="bulkAccount" class="form-select form-select-sm" style="width:auto">
-    <option value="">— بدون حساب (إلغاء تعيين) —</option>
-    {% for a in accs %}<option value="{{ a.id }}">{{ a.display_name or a.email }}</option>{% endfor %}
-   </select></span>
-  <button class="btn btn-sm btn-primary" onclick="bulkApply()">
-   <i class="bi bi-check2-square"></i> تنفيذ</button>
-  <button class="btn btn-sm btn-outline-secondary" onclick="empClearSel()">إلغاء التحديد</button>
+  <button class="btn btn-sm btn-outline-dark" onclick="bulkDo('move')">
+   <i class="bi bi-arrow-left-right"></i> نقل للحساب</button>
+  <span class="text-muted">|</span>
+  <button class="btn btn-sm btn-danger" onclick="bulkDo('delete')">
+   <i class="bi bi-trash"></i> حذف</button>
+  <button class="btn btn-sm btn-light border" onclick="empClearSel()">إلغاء التحديد</button>
  </div>
 </div>
 <form id="bulkForm" method="POST" action="{{ url_for('employees_bulk') }}" class="d-none">
@@ -3834,7 +3848,8 @@ EMPLOYEES_TPL = """
    <th style="width:34px"><input type="checkbox" id="empAll" onclick="empToggleAll(this)"
        title="تحديد الكل"></th>
    <th>الاسم</th><th>البريد</th><th>الإقامة</th><th>الرقم الوظيفي</th><th>المنصب</th><th>القسم</th><th>الهاتف</th>
-   <th>الحساب المسؤول</th><th>توقيع</th><th>الاتصال</th><th>نشط</th><th>إجراءات</th></tr></thead>
+   <th>الحساب المسؤول</th><th>توقيع</th><th>الاتصال</th>
+   <th>مُرسَلة</th><th>مُستقبَلة</th><th>نشط</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for e in rows %}
  <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ e.department ~ ' ' ~ e.title ~ ' ' ~ (e.iqama or '') ~ ' ' ~ (e.emp_number or ''))|lower }}">
@@ -3849,6 +3864,8 @@ EMPLOYEES_TPL = """
        title="عرض التوقيع الفعلي"><i class="bi bi-eye"></i> عرض</button></td>
   <td><span class="status-dot {{ 'on' if e.emp_connected else 'off' }}">
       {{ 'متصل' if e.emp_connected else 'غير متصل' }}</span></td>
+  <td><span class="badge bg-success" title="رسائل أرسلها">{{ (counts.get(e.email|lower) or {}).get('sent', 0) }}</span></td>
+  <td><span class="badge bg-info text-dark" title="رسائل وصلته">{{ (counts.get(e.email|lower) or {}).get('inbox', 0) }}</span></td>
   <td>{{ '✔' if e.active else '✖' }}</td>
   <td class="text-nowrap">
    <a class="btn btn-sm btn-primary" href="{{ url_for('mail_view', kind='employee', oid=e.id, bare=1) }}"
@@ -3867,7 +3884,7 @@ EMPLOYEES_TPL = """
       onclick="return confirm('حذف الموظف؟')"><i class="bi bi-trash"></i></a>
   </td>
  </tr>
- {% else %}<tr><td colspan="13" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
+ {% else %}<tr><td colspan="15" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
  </tbody>
 </table>
 </div>
@@ -3963,12 +3980,11 @@ function empClearSel(){
  document.querySelectorAll('.emp-chk').forEach(function(c){c.checked=false;});
  empSync();
 }
-function bulkApply(){
+function bulkDo(act){
  var ids = empChecked().map(function(c){return c.value;});
- if(!ids.length){ alert('حدّد موظف واحد على الأقل'); return; }
- var act = document.getElementById('bulkAction').value;
+ if(!ids.length){ alert('حدّد موظف واحد على الأقل (أو علّم «تحديد الكل» فوق)'); return; }
  var labels={activate:'تفعيل',deactivate:'إيقاف',move:'نقل',delete:'حذف',
-   connect:'اتصال بصناديق',login:'إنشاء لوج إن لـ'};
+   connect:'اتصال/تحديث صناديق',login:'إنشاء لوج إن لـ'};
  var warn = (act==='delete')
    ? ('⚠️ حذف '+ids.length+' موظف نهائياً؟ لا يمكن التراجع.')
    : ('تأكيد '+labels[act]+' '+ids.length+' موظف؟');
@@ -4873,10 +4889,10 @@ REVERSE_TPL = """
      <input type="checkbox" name="reverse_enabled" {{ 'checked' if s.reverse_enabled=='1' }}>
      <span><span class="t fw-bold">تفعيل الرد العكسي التلقائي</span></span></label>
     <div class="rv-grid">
-     <div class="rv-fld"><label>الرد بعد كم دقيقة من وصول الرسالة</label>
-      <input class="rv-inp" name="reverse_delay_minutes" type="number" min="0"
-             value="{{ s.reverse_delay_minutes or delay_default }}">
-      <div class="rv-hint">مثال: 15 = كل موظف يرد بعد ربع ساعة من استلامه.</div></div>
+     <div class="rv-fld"><label>الرد بعد كم <b>ثانية</b> من وصول الرسالة</label>
+      <input class="rv-inp" name="reverse_delay_seconds" type="number" min="0"
+             value="{{ s.reverse_delay_seconds or '20' }}">
+      <div class="rv-hint">الافتراضي 20 ثانية — الموظف ما يردّش إلا بعد مرور المدة دي من استلامه.</div></div>
      <div class="rv-fld"><label>فحص صناديق الموظفين كل (دقيقة)</label>
       <input class="rv-inp" name="reverse_scan_minutes" type="number" min="1"
              value="{{ s.reverse_scan_minutes or scan_default }}"></div>
@@ -7767,16 +7783,32 @@ def backup_download(name):
     return send_file(path, as_attachment=True, download_name=safe)
 
 
+def _mailbox_msg_counts(conn):
+    """عدد الرسائل في كل صندوق: {البريد: {'inbox': مستقبَلة, 'sent': مُرسَلة}}."""
+    out = {}
+    try:
+        for r in conn.execute("SELECT lower(box_email) be, folder, COUNT(*) c "
+                              "FROM mail_messages GROUP BY lower(box_email), folder").fetchall():
+            out.setdefault(r["be"], {})[r["folder"]] = r["c"]
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 # ------------------------------------------------------------------ الحسابات
 @app.route("/accounts")
 def accounts():
     conn = get_connection()
     cur = conn.cursor()
+    mcounts = _mailbox_msg_counts(cur)
     rows = []
     for a in cur.execute("SELECT * FROM accounts ORDER BY id").fetchall():
         h, d = _account_send_counts(cur, a["id"])
         rec = dict(a)
         rec["used_hour"], rec["used_day"] = h, d
+        mc = mcounts.get((a["email"] or "").lower(), {})
+        rec["recv_ct"] = mc.get("inbox", 0)
+        rec["sent_ct"] = mc.get("sent", 0)
         rec["employees"] = cur.execute(
             "SELECT name, email, emp_connected, active FROM employees "
             "WHERE owner_account_id=? ORDER BY name", (a["id"],)
@@ -7981,8 +8013,9 @@ def employees():
                            FROM employees e LEFT JOIN accounts a ON a.id = e.owner_account_id
                            ORDER BY e.name""").fetchall()
     accs = conn.execute("SELECT id, email, display_name FROM accounts ORDER BY id").fetchall()
+    counts = _mailbox_msg_counts(conn)
     conn.close()
-    return render("employees.html", "الموظفين", rows=rows, accs=accs)
+    return render("employees.html", "الموظفين", rows=rows, accs=accs, counts=counts)
 
 
 @app.route("/employees/bulk", methods=["POST"])
@@ -9096,7 +9129,7 @@ def autoreply_page():
 _REVERSE_KEYS = ["emp_imap_server", "emp_imap_port", "emp_smtp_server", "emp_smtp_port",
                  "emp_security", "reverse_enabled", "reverse_batch_size",
                  "reverse_min_delay", "reverse_max_delay", "reverse_default_reply",
-                 "reverse_delay_minutes", "reverse_scan_minutes"]
+                 "reverse_delay_minutes", "reverse_delay_seconds", "reverse_scan_minutes"]
 
 
 @app.route("/reverse", methods=["GET", "POST"])
@@ -9110,7 +9143,7 @@ def reverse_page():
             raw = f.get(k, "").strip()
             set_setting(k, str(max(0, int(raw))) if raw.isdigit() else "")
         for k in ("reverse_batch_size", "reverse_min_delay", "reverse_max_delay",
-                  "reverse_delay_minutes", "reverse_scan_minutes"):
+                  "reverse_delay_minutes", "reverse_delay_seconds", "reverse_scan_minutes"):
             try:
                 set_setting(k, max(0, int(f.get(k, "0"))))
             except ValueError:
