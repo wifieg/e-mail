@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.6"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.7"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -643,6 +643,7 @@ def init_db():
         "company_phone": "920035640",            # هاتف موحّد يظهر في {phone} بكل التواقيع
         "company_website": "www.solutionstech.sa",  # موقع موحّد يظهر في {website}
         "global_logo": "",                        # لوجو موحّد (data URI) لكل التواقيع
+        "signature_style": "rich",                # rich = التصميم الاحترافي · text = نصّي بسيط
     }
     for k, v in defaults.items():
         cur.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)", (k, v))
@@ -1023,6 +1024,96 @@ def _signature_html(text, logo=""):
     return ('<table dir="ltr" style="border-collapse:collapse"><tr>'
             '<td style="vertical-align:top;padding-right:16px">%s</td>'
             '<td style="vertical-align:top">%s</td></tr></table>') % (img, txt_html)
+
+
+# -------- التوقيع الاحترافي (تصميم ثابت تُملأ بياناته من بيانات الموظف) --------
+SIG_TEAL = "#15505f"
+_SIG_ICON_PATHS = {
+    "phone": ("M3.654 1.328a.678.678 0 0 0-1.015-.063L1.605 2.3c-.483.484-.661 1.169-.45 "
+              "1.77a17.6 17.6 0 0 0 4.168 6.608 17.6 17.6 0 0 0 6.608 4.168c.601.211 1.286.033 "
+              "1.77-.45l1.034-1.034a.678.678 0 0 0-.063-1.015l-2.307-1.794a.68.68 0 0 0-.58-.122l-2.19."
+              "547a1.75 1.75 0 0 1-1.657-.459L5.482 8.062a1.75 1.75 0 0 1-.46-1.657l.548-2.19a.68.68 "
+              "0 0 0-.122-.58z"),
+    "mail": ("M.05 3.555A2 2 0 0 1 2 2h12a2 2 0 0 1 1.95 1.555L8 8.414zM0 4.697v7.104l5.803-3.558zM"
+             "6.761 8.83l-6.57 4.027A2 2 0 0 0 2 14h12a2 2 0 0 0 1.808-1.144l-6.57-4.027L8 9.586zM"
+             "10.197 8.343 16 11.9V4.697z"),
+    "pin": ("M8 16s6-5.686 6-10A6 6 0 0 0 2 6c0 4.314 6 10 6 10m0-7a3 3 0 1 1 0-6 3 3 0 0 1 0 6"),
+    "web": ("M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8m7.5-6.923c-.67.204-1.335.82-1.887 1.855A8 8 0 0 0 "
+            "5.145 4H7.5zM4.09 4a9.3 9.3 0 0 1 .64-1.539 7 7 0 0 1 .597-.933A7.03 7.03 0 0 0 2.255 "
+            "4zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a7 7 0 0 0-.656 2.5zM4.847 5a12.5 12.5 0 0 "
+            "0-.338 2.5H7.5V5zM8.5 5v2.5h2.99a12.5 12.5 0 0 0-.337-2.5zM4.51 8.5a12.5 12.5 0 0 0 "
+            ".337 2.5H7.5V8.5zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5zM5.145 12q.208.58.468 "
+            "1.068c.552 1.035 1.218 1.65 1.887 1.855V12zm.182 2.472a7 7 0 0 1-.597-.933A9.3 9.3 0 0 "
+            "1 4.09 12H2.255a7 7 0 0 0 3.072 2.472M3.82 11a13.7 13.7 0 0 1-.312-2.5h-2.49c.062.89.291 "
+            "1.733.656 2.5zm6.853 0c.173-.782.282-1.623.312-2.5h2.49a7 7 0 0 1-.656 2.5zm.555-5a9.3 "
+            "9.3 0 0 0-.64-1.539 7 7 0 0 0-.597-.933A7.03 7.03 0 0 1 13.745 4zm-5.64-2.923c.67.204 "
+            "1.335.82 1.887 1.855q.26.487.468 1.068H8.5zM8 1a7 7 0 1 0 0 14A7 7 0 0 0 8 1"),
+}
+
+
+def _sig_icon(kind):
+    """دائرة بإطار teal بداخلها أيقونة SVG."""
+    d = _SIG_ICON_PATHS.get(kind, "")
+    svg = ('<svg width="14" height="14" viewBox="0 0 16 16" fill="%s" '
+           'style="vertical-align:middle"><path d="%s"/></svg>' % (SIG_TEAL, d)) if d else ""
+    return ('<span style="display:inline-block;width:30px;height:30px;border:1.5px solid %s;'
+            'border-radius:50%%;line-height:28px;text-align:center;vertical-align:middle">%s</span>'
+            % (SIG_TEAL, svg))
+
+
+def _rich_signature_html(entity, logo=""):
+    """توقيع احترافي بتصميم ثابت — اللوجو يسار، فاصل مزدوج، ثم الاسم/الوظيفة وصفوف
+    الهاتف/الإيميل/القسم/الموقع. البيانات من بيانات الموظف + الهاتف/الموقع الموحّدين."""
+    def g(k):
+        try:
+            return (entity[k] or "").strip()
+        except (KeyError, IndexError, TypeError):
+            v = entity.get(k, "") if isinstance(entity, dict) else ""
+            return (v or "").strip()
+    name = g("name")
+    title = g("title")
+    dept = g("department")
+    email = g("email")
+    phone = get_setting("company_phone", "920035640")
+    website = get_setting("company_website", "www.solutionstech.sa")
+    web_href = website if website.startswith("http") else "https://" + website
+
+    def row(icon, text, href=""):
+        if not text:
+            return ""
+        val = ('<a href="%s" style="color:%s;text-decoration:none">%s</a>' % (href, SIG_TEAL, text)
+               ) if href else text
+        return ('<tr><td style="padding:4px 0;vertical-align:middle">%s</td>'
+                '<td style="padding:4px 12px;vertical-align:middle;font-size:14px;color:%s" '
+                'dir="ltr">%s</td></tr>') % (_sig_icon(icon), SIG_TEAL, val)
+
+    rows = (row("phone", phone) + row("mail", email, "mailto:%s" % email)
+            + row("pin", dept) + row("web", website, web_href))
+    details = '<div style="font-size:30px;font-weight:bold;color:%s;line-height:1.05">%s</div>' % (
+        SIG_TEAL, name)
+    if title:
+        details += ('<div style="font-size:13px;letter-spacing:4px;color:%s;margin:5px 0 12px;'
+                    'text-transform:uppercase">%s</div>' % (SIG_TEAL, title))
+    else:
+        details += '<div style="margin-bottom:12px"></div>'
+    details += ('<table cellpadding="0" cellspacing="0" style="border-collapse:collapse">%s</table>'
+                % rows)
+
+    left = ""
+    if logo:
+        left = ('<td style="vertical-align:middle;text-align:center;padding-right:6px">'
+                '<img src="%s" style="max-width:170px;max-height:130px;display:block" alt="logo">'
+                '</td>'
+                '<td style="padding:0 22px;vertical-align:middle">'
+                '<table cellpadding="0" cellspacing="0" style="height:130px"><tr>'
+                '<td style="border-left:2px solid %s;padding-left:5px"></td>'
+                '<td style="border-left:2px solid %s"></td></tr></table></td>') % (
+                    logo, SIG_TEAL, SIG_TEAL)
+    return ('<div dir="ltr" style="font-family:Arial,Helvetica,sans-serif;text-align:left">'
+            '<div style="font-size:20px;font-weight:bold;color:#1a1a1a;margin-bottom:14px">'
+            'Thanks &amp; Best Regards</div>'
+            '<table dir="ltr" cellpadding="0" cellspacing="0" style="border-collapse:collapse">'
+            '<tr>%s<td style="vertical-align:middle">%s</td></tr></table></div>') % (left, details)
 
 
 def internal_deliver(from_email, from_name, to_email, subject, body_html,
@@ -2226,6 +2317,7 @@ def _process_batch_inner(limit):
     batch_size = limit or (s["batch_size"] if s else 10)
     cfg = _batch_config(cur)
     sig_tpl = get_setting("signature_template", "")
+    sig_style = get_setting("signature_style", "rich")
     # تاريخ/وقت إرسال عام (من إعدادات الجدولة) — يُستخدم كاحتياطي لو الحملة ملهاش تاريخ خاص
     def _parse_date(d, t):
         d = (d or "").strip()
@@ -2317,12 +2409,15 @@ def _process_batch_inner(limit):
             html = _text_to_html(content)
             acc_as_entity = {"name": account["display_name"] or "", "email": account["email"],
                              "title": "", "department": "", "phone": ""}
-            acc_sig = _fill_placeholders(
-                account["signature"] if "signature" in account.keys() else "", acc_as_entity)
-            acc_sig = "\n".join(ln for ln in acc_sig.split("\n")
-                                if ln.strip() not in ("", "هاتف:", "Phone:", "Tel:")).strip()
             acc_logo = _effective_logo(account["logo"] if "logo" in account.keys() else "")
-            sig_html = _signature_html(acc_sig, acc_logo)
+            if sig_style == "rich":
+                sig_html = _rich_signature_html(acc_as_entity, acc_logo)
+            else:
+                acc_sig = _fill_placeholders(
+                    account["signature"] if "signature" in account.keys() else "", acc_as_entity)
+                acc_sig = "\n".join(ln for ln in acc_sig.split("\n")
+                                    if ln.strip() not in ("", "هاتف:", "Phone:", "Tel:")).strip()
+                sig_html = _signature_html(acc_sig, acc_logo)
             if sig_html:
                 html += "<br><br>" + sig_html
             ok, message = internal_deliver(
@@ -2603,6 +2698,7 @@ def flush_reverse_queue(limit=None):
                          max(0, _gi("reverse_max_delay", 25))))
         save_sent = get_setting("save_to_sent", "1") == "1"
         sig_tpl = get_setting("signature_template", "")
+        sig_style = get_setting("signature_style", "rich")
         replied = failed = 0
 
         for row in rows:
@@ -2612,10 +2708,10 @@ def flush_reverse_queue(limit=None):
                    "owner_account_id": row["owner_account_id"], "password": row["password"]}
             acct = _emp_account(emp)
             body_tpl = _reverse_reply_text(conn, emp, row["account_email"])
-            body = _fill_placeholders(body_tpl, emp)
+            reply_text = _fill_placeholders(body_tpl, emp)
             sig_text, sig_logo = resolve_signature(conn, emp)
-            if sig_text:
-                body = (body + "\n\n" + sig_text).strip()
+            # نص عادي (للسيرفر الخارجي) = الرد + التوقيع النصّي
+            body = (reply_text + ("\n\n" + sig_text if sig_text else "")).strip()
             subject = row["subject"] or "(بدون موضوع)"
             if not subject.lower().startswith("re:"):
                 subject = "Re: " + subject
@@ -2630,8 +2726,12 @@ def flush_reverse_queue(limit=None):
             is_internal = _email_domain_internal(conn, row["emp_email"])
             if is_internal:
                 # رد داخلي: يتسلّم في صندوق الحساب الرئيسي داخل البرنامج
-                # اللوجو الموحّد على الشمال والنص على اليمين
-                html = _signature_html(body, _effective_logo(sig_logo))
+                if sig_style == "rich":
+                    # التصميم الاحترافي: نص الرد ثم توقيع احترافي ببيانات الموظف
+                    html = (_text_to_html(reply_text) + "<br><br>"
+                            + _rich_signature_html(emp, _effective_logo(sig_logo)))
+                else:
+                    html = _signature_html(body, _effective_logo(sig_logo))
                 ok, res = internal_deliver(row["emp_email"], row["name"] or "",
                                            row["account_email"], subject,
                                            html, in_reply_to=in_reply_to, conn=conn,
@@ -3751,6 +3851,13 @@ TEMPLATES_TPL = """
       <label class="small text-muted mb-1">لوجو موحّد لكل التواقيع (أقصى 600KB)</label>
       <input name="logo" type="file" accept="image/*" class="form-control form-control-sm sig-file"></div>
     </div>
+    <div class="mt-3">
+     <label class="small text-muted mb-1 d-block">شكل التوقيع المعتمد</label>
+     <label class="me-3 small"><input type="radio" name="signature_style" value="rich"
+        {{ 'checked' if signature_style != 'text' }}> التصميم الاحترافي (زي الصورة)</label>
+     <label class="small"><input type="radio" name="signature_style" value="text"
+        {{ 'checked' if signature_style == 'text' }}> نصّي بسيط</label>
+    </div>
     <div class="d-flex align-items-center gap-3 mt-3 flex-wrap">
      <button class="sig-btn"><i class="bi bi-check-lg"></i> حفظ البيانات الثابتة</button>
      {% if global_logo %}
@@ -3764,7 +3871,19 @@ TEMPLATES_TPL = """
  </div>
 
  <div class="sig-card">
-  <div class="sig-card-h"><i class="bi bi-globe2"></i> قالب التوقيع العام</div>
+  <div class="sig-card-h"><i class="bi bi-stars"></i> التصميم المعتمد للتوقيع (يُملأ من بيانات كل موظف)</div>
+  <div class="sig-card-b">
+   <div class="sig-hint">ده شكل التوقيع اللي بيتبعت فعلاً — الاسم/الوظيفة/الإيميل/القسم بتتعبّى
+    من بيانات كل موظف، والهاتف/الموقع/اللوجو موحّدين من فوق. (الوظيفة = خانة «المنصب»،
+    مكان 📍 = خانة «القسم».)</div>
+   <div style="background:#eceff1;border-radius:10px;padding:24px;overflow:auto">
+    {{ rich_preview|safe }}
+   </div>
+  </div>
+ </div>
+
+ <div class="sig-card">
+  <div class="sig-card-h"><i class="bi bi-globe2"></i> قالب التوقيع العام (للوضع النصّي البسيط فقط)</div>
   <div class="sig-card-b">
    <div class="sig-hint">يُطبَّق على أي موظف مالوش توقيع خاص ولا حسابه الرئيسي له توقيع. المتغيرات:
     <code>{name}</code> <code>{title}</code> <code>{department}</code> <code>{email}</code>
@@ -7962,15 +8081,22 @@ def templates_page():
     mains = conn.execute(
         "SELECT id, email, display_name, signature, logo FROM accounts ORDER BY email").fetchall()
     emps = conn.execute("""SELECT e.id, e.name, e.email, e.signature, e.iqama, e.emp_number,
+                                  e.title, e.department,
                                   a.email AS owner_email, a.display_name AS owner_name
                            FROM employees e LEFT JOIN accounts a ON a.id = e.owner_account_id
                            ORDER BY a.email, e.email""").fetchall()
+    glogo = get_setting("global_logo", "")
+    # معاينة توضيحية للتصميم ببيانات مثال كاملة (كل الصفوف تظهر)
+    rich_preview = _rich_signature_html(
+        {"name": "Fahad Al Harbi", "title": "Human Resources",
+         "department": "Dammam", "email": "fahad@solutionstech.sa"}, glogo)
     conn.close()
     return render("templates.html", "توقيع الموظفين", mains=mains, emps=emps,
                   signature_template=get_setting("signature_template", ""),
                   company_phone=get_setting("company_phone", "920035640"),
                   company_website=get_setting("company_website", "www.solutionstech.sa"),
-                  global_logo=get_setting("global_logo", ""))
+                  global_logo=glogo, rich_preview=rich_preview,
+                  signature_style=get_setting("signature_style", "rich"))
 
 
 @app.route("/templates/employee-signature/<int:eid>", methods=["POST"])
@@ -8011,6 +8137,8 @@ def save_company_info():
     f = request.form
     set_setting("company_phone", (f.get("company_phone", "") or "").strip())
     set_setting("company_website", (f.get("company_website", "") or "").strip())
+    style = f.get("signature_style", "rich")
+    set_setting("signature_style", "rich" if style == "rich" else "text")
     if f.get("remove_logo"):
         set_setting("global_logo", "")
         flash("تم حذف اللوجو الموحّد + حفظ الهاتف والموقع", "success")
