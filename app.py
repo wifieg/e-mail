@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.12"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.13"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3623,10 +3623,37 @@ ACCOUNTS_TPL = """
   <div class="modal-footer"><button class="btn btn-primary">حفظ</button></div>
  </form>
 </div></div></div>
-<div class="modal fade" id="empof{{ a.id }}" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+<div class="modal fade" id="empof{{ a.id }}" tabindex="-1"><div class="modal-dialog modal-lg"><div class="modal-content">
  <div class="modal-header"><h5 class="modal-title">موظفو {{ a.display_name or a.email }}</h5>
   <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
  <div class="modal-body">
+  <div class="card card-body bg-light mb-3">
+   <div class="fw-bold mb-2"><i class="bi bi-people-fill text-primary"></i> تعيين موظفين لهذا الحساب</div>
+   <form method="POST" action="{{ url_for('account_assign_employees', aid=a.id) }}"
+         class="row g-2 align-items-end mb-2">
+    <input type="hidden" name="mode" value="group">
+    <div class="col-sm-8"><label class="small text-muted mb-1">بالمجموعة (قسم / منصب)</label>
+     <select name="group_value" class="form-select form-select-sm"
+        onchange="this.form.group_type.value=this.options[this.selectedIndex].dataset.type||''">
+      <option value="">— اختر مجموعة —</option>
+      {% for g in groups %}<option value="{{ g.value }}" data-type="{{ g.type }}">{{ g.label }}</option>{% endfor %}
+     </select>
+     <input type="hidden" name="group_type" value=""></div>
+    <div class="col-sm-4"><button class="btn btn-sm btn-primary w-100">
+     <i class="bi bi-check2-all"></i> عيّن كل المجموعة</button></div>
+   </form>
+   <form method="POST" action="{{ url_for('account_assign_employees', aid=a.id) }}"
+         class="row g-2 align-items-end">
+    <input type="hidden" name="mode" value="random">
+    <div class="col-sm-5"><label class="small text-muted mb-1">عدد عشوائي</label>
+     <input name="count" type="number" min="1" class="form-control form-control-sm" placeholder="50"></div>
+    <div class="col-sm-4 pb-1"><label class="small d-block">
+      <input type="checkbox" name="from_all" value="1"> من كل الموظفين</label>
+     <span class="small text-muted">غير المعيّنين: {{ unassigned }}/{{ total_active }}</span></div>
+    <div class="col-sm-3"><button class="btn btn-sm btn-outline-primary w-100">
+     <i class="bi bi-shuffle"></i> عيّن عشوائي</button></div>
+   </form>
+  </div>
   {% if a.employees %}
   <table class="table table-sm">
    <thead><tr><th>الاسم</th><th>البريد</th><th>الاتصال</th><th>نشط</th></tr></thead>
@@ -7704,8 +7731,76 @@ def accounts():
             "WHERE owner_account_id=? ORDER BY name", (a["id"],)
         ).fetchall()
         rows.append(rec)
+    # مجموعات الموظفين (أقسام + مناصب) للتعيين السريع بالجروب
+    groups = []
+    for col, kind in (("department", "قسم"), ("title", "منصب")):
+        for r in cur.execute(
+            "SELECT %s v, COUNT(*) c FROM employees WHERE active=1 AND %s!='' "
+            "GROUP BY %s ORDER BY %s" % (col, col, col, col)).fetchall():
+            groups.append({"type": col, "value": r["v"],
+                           "label": "%s: %s (%d)" % (kind, r["v"], r["c"])})
+    unassigned = cur.execute("SELECT COUNT(*) c FROM employees "
+                             "WHERE active=1 AND owner_account_id IS NULL").fetchone()["c"]
+    total_active = cur.execute("SELECT COUNT(*) c FROM employees WHERE active=1").fetchone()["c"]
     conn.close()
-    return render("accounts.html", "الإيميلات المرسِلة", rows=rows)
+    return render("accounts.html", "الإيميلات المرسِلة", rows=rows,
+                  groups=groups, unassigned=unassigned, total_active=total_active)
+
+
+@app.route("/accounts/<int:aid>/assign", methods=["POST"])
+def account_assign_employees(aid):
+    """تعيين موظفين لحساب رئيسي: بالمجموعة (قسم/منصب) أو عدد عشوائي."""
+    f = request.form
+    conn = get_connection()
+    cur = conn.cursor()
+    if not cur.execute("SELECT 1 FROM accounts WHERE id=?", (aid,)).fetchone():
+        conn.close()
+        abort(404)
+    mode = f.get("mode", "")
+    n = 0
+    if mode == "group":
+        col = f.get("group_type", "")
+        val = (f.get("group_value", "") or "").strip()
+        if col not in ("department", "title") or not val:
+            conn.close()
+            flash("اختر مجموعة صحيحة", "error")
+            return redirect(url_for("accounts"))
+        cur.execute("UPDATE employees SET owner_account_id=? "
+                    "WHERE active=1 AND %s=?" % col, (aid, val))
+        n = cur.execute("SELECT COUNT(*) c FROM employees WHERE owner_account_id=? AND %s=?"
+                        % col, (aid, val)).fetchone()["c"]
+        msg = "تم تعيين موظفي المجموعة «%s» على الحساب (%d موظف)" % (val, n)
+    elif mode == "random":
+        try:
+            want = max(1, int(f.get("count", "0")))
+        except (TypeError, ValueError):
+            conn.close()
+            flash("اكتب عدداً صحيحاً", "error")
+            return redirect(url_for("accounts"))
+        from_all = f.get("from_all") == "1"
+        if from_all:
+            cand = cur.execute(
+                "SELECT id FROM employees WHERE active=1 AND (owner_account_id IS NULL "
+                "OR owner_account_id<>?) ORDER BY RANDOM() LIMIT ?", (aid, want)).fetchall()
+        else:
+            cand = cur.execute(
+                "SELECT id FROM employees WHERE active=1 AND owner_account_id IS NULL "
+                "ORDER BY RANDOM() LIMIT ?", (want,)).fetchall()
+        ids = [r["id"] for r in cand]
+        if ids:
+            ph = ",".join(["?"] * len(ids))
+            cur.execute("UPDATE employees SET owner_account_id=? WHERE id IN (%s)" % ph,
+                        [aid] + ids)
+        n = len(ids)
+        msg = "تم تعيين %d موظف عشوائياً على الحساب" % n
+    else:
+        conn.close()
+        flash("إجراء غير معروف", "error")
+        return redirect(url_for("accounts"))
+    conn.commit()
+    conn.close()
+    flash(msg, "success")
+    return redirect(url_for("accounts"))
 
 
 @app.route("/accounts/add", methods=["POST"])
