@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.13"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.14"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3752,18 +3752,18 @@ EMPLOYEES_TPL = """
   <i class="bi bi-file-earmark-arrow-down"></i> تحميل نموذج الاستيراد</a>
  <form method="POST" action="{{ url_for('import_employees') }}" enctype="multipart/form-data"
        class="d-flex gap-2">
-  <input type="file" name="file" accept=".csv" required class="form-control form-control-sm" style="width:auto">
-  <button class="btn btn-success btn-sm"><i class="bi bi-upload"></i> استيراد CSV</button>
+  <input type="file" name="file" accept=".xlsx,.xlsm,.csv" required class="form-control form-control-sm" style="width:auto">
+  <button class="btn btn-success btn-sm"><i class="bi bi-upload"></i> استيراد</button>
  </form>
  <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('export_employees') }}">
   <i class="bi bi-download"></i> تصدير CSV</a>
  <a class="btn btn-success btn-sm" href="{{ url_for('connect_all_employees') }}">
   <i class="bi bi-plug"></i> اتصال بصناديق الكل + تحميل الوارد/المُرسَل</a>
 </div>
-<p class="text-muted small">اضغط <b>«تحميل نموذج الاستيراد»</b> لتنزيل ملف بالأعمدة الجاهزة
- (<code>اسم المشترك · رقم الهوية · المهنة · Email</code>)، املأ الداتا وامسح صف المثال ثم ارفعه بـ «استيراد CSV».
- البرنامج يفهم أسماء الأعمدة عربي أو إنجليزي، وأي موظف جديد ياخد كلمة مرور افتراضية (022001)
- وتوقيعه بيتولّد تلقائياً من <a href="{{ url_for('templates_page') }}">التصميم الاحترافي</a>.</p>
+<p class="text-muted small">اضغط <b>«تحميل نموذج الاستيراد»</b> لتنزيل ملف Excel بالأعمدة الجاهزة
+ (<code>اسم المشترك · رقم الهوية · المهنة · Email</code>) — كل عمود منفصل، املأ الداتا
+ وامسح صف المثال ثم ارفعه بـ «استيراد». يقبل Excel (.xlsx) أو CSV، ويفهم أسماء الأعمدة
+ عربي أو إنجليزي. أي موظف جديد ياخد كلمة مرور افتراضية (022001) وتوقيعه بالتصميم الاحترافي تلقائياً.</p>
 <div class="mb-3" style="max-width:420px">
  <div class="input-group">
   <span class="input-group-text"><i class="bi bi-search"></i></span>
@@ -8071,14 +8071,27 @@ def _import_colmap(header):
 def import_employees():
     file = request.files.get("file")
     if not file or not file.filename:
-        flash("اختر ملف CSV", "warning")
+        flash("اختر ملف CSV أو Excel", "warning")
         return redirect(url_for("employees"))
-    raw = file.stream.read().decode("utf-8-sig", errors="ignore")
-    try:
-        dialect = csv.Sniffer().sniff(raw[:2048], delimiters=",;\t")
-    except csv.Error:
-        dialect = csv.excel
-    all_rows = [r for r in csv.reader(io.StringIO(raw), dialect)]
+    fname = (file.filename or "").lower()
+    all_rows = []
+    if fname.endswith((".xlsx", ".xlsm")):
+        try:
+            from openpyxl import load_workbook
+            wb = load_workbook(io.BytesIO(file.stream.read()), read_only=True, data_only=True)
+            ws = wb.active
+            for row in ws.iter_rows(values_only=True):
+                all_rows.append(["" if v is None else str(v).strip() for v in row])
+        except Exception as exc:  # noqa: BLE001
+            flash("تعذّر قراءة ملف Excel: %s" % exc, "error")
+            return redirect(url_for("employees"))
+    else:
+        raw = file.stream.read().decode("utf-8-sig", errors="ignore")
+        try:
+            dialect = csv.Sniffer().sniff(raw[:2048], delimiters=",;\t")
+        except csv.Error:
+            dialect = csv.excel
+        all_rows = [r for r in csv.reader(io.StringIO(raw), dialect)]
     conn = get_connection()
     cur = conn.cursor()
     added = updated = skipped = 0
@@ -8136,15 +8149,51 @@ def import_employees():
 
 @app.route("/employees/import-template")
 def employees_import_template():
-    """ينزّل نموذج استيراد فارغ بالأعمدة العربية الجاهزة للتعبئة."""
-    buf = io.StringIO()
-    w = csv.writer(buf)
-    w.writerow(["اسم المشترك", "رقم الهوية", "المهنة", "Email"])
-    # صف مثال توضيحي (امسحه قبل الرفع)
-    w.writerow(["محمد أحمد", "1234567890", "محاسب", "mohamed@example.com"])
-    return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
-                    headers={"Content-Disposition":
-                             "attachment; filename=employees_import_template.csv"})
+    """ينزّل نموذج استيراد Excel (.xlsx) بأعمدة منفصلة جاهزة للتعبئة."""
+    headers = ["اسم المشترك", "رقم الهوية", "المهنة", "Email"]
+    sample = ["محمد أحمد", "1234567890", "محاسب", "mohamed@example.com"]
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        wb = Workbook()
+        ws = wb.active
+        ws.title = "الموظفون"
+        ws.sheet_view.rightToLeft = True
+        ws.append(headers)
+        ws.append(sample)
+        green = PatternFill("solid", fgColor="21A366")
+        hfont = Font(bold=True, color="FFFFFF", size=12)
+        thin = Side(style="thin", color="BBBBBB")
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+        center = Alignment(horizontal="center", vertical="center")
+        for c in ws[1]:
+            c.fill = green
+            c.font = hfont
+            c.alignment = center
+            c.border = border
+        for c in ws[2]:
+            c.alignment = center
+            c.border = border
+        for i, w in enumerate([26, 18, 22, 34], start=1):
+            ws.column_dimensions[chr(64 + i)].width = w
+        ws.row_dimensions[1].height = 26
+        bio = io.BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+        return Response(
+            bio.read(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition":
+                     "attachment; filename=employees_import_template.xlsx"})
+    except ImportError:
+        # احتياطي: CSV بفاصلة منقوطة (أفضل توافق مع إكسل العربي)
+        buf = io.StringIO()
+        w = csv.writer(buf, delimiter=";")
+        w.writerow(headers)
+        w.writerow(sample)
+        return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
+                        headers={"Content-Disposition":
+                                 "attachment; filename=employees_import_template.csv"})
 
 
 @app.route("/employees/export")
