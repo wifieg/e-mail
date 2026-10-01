@@ -107,13 +107,15 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.5"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.6"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
 
 # قالب توقيع افتراضي (يُطبَّق على كل موظف ببياناته)
-DEFAULT_SIGNATURE_TPL = "--\n{name}\n{title}\n{department}\nهاتف: {phone}\n{email}"
+# {phone} و {website} قيمتهما ثابتة من الإعدادات (هاتف/موقع الشركة الموحّد)
+DEFAULT_SIGNATURE_TPL = ("--\n{name}\n{title} | {department}\nEmail: {email}\n"
+                         "Phone: {phone}\n{website}")
 
 # ------------------------------------------------------------------ التسجيل
 _handlers = [logging.FileHandler(LOG_FILE, encoding="utf-8")]
@@ -637,6 +639,10 @@ def init_db():
         "emp_smtp_server": "",
         "emp_smtp_port": "",
         "emp_security": "",
+        # ---- بيانات ثابتة لكل التواقيع ----
+        "company_phone": "920035640",            # هاتف موحّد يظهر في {phone} بكل التواقيع
+        "company_website": "www.solutionstech.sa",  # موقع موحّد يظهر في {website}
+        "global_logo": "",                        # لوجو موحّد (data URI) لكل التواقيع
     }
     for k, v in defaults.items():
         cur.execute("INSERT OR IGNORE INTO app_settings (key, value) VALUES (?, ?)", (k, v))
@@ -1000,14 +1006,23 @@ def _logo_data_uri(file_storage):
     return "data:%s;base64,%s" % (mime, base64.b64encode(raw).decode("ascii"))
 
 
+def _effective_logo(account_logo=""):
+    """اللوجو الفعلي لأي توقيع: اللوجو الموحّد العام إن وُجد، وإلا لوجو الحساب."""
+    return (get_setting("global_logo", "") or "").strip() or (account_logo or "")
+
+
 def _signature_html(text, logo=""):
-    """يبني HTML التوقيع: النص + اللوجو أسفله (لو موجود)."""
-    parts = []
-    if (text or "").strip():
-        parts.append(_text_to_html(text.strip()))
-    if logo:
-        parts.append('<img src="%s" style="max-height:90px;margin-top:8px" alt="logo">' % logo)
-    return "<br>".join(parts)
+    """يبني HTML التوقيع: اللوجو على الشمال والنص على اليمين (لو فيه لوجو)."""
+    txt_html = _text_to_html(text.strip()) if (text or "").strip() else ""
+    if not logo:
+        return txt_html
+    img = '<img src="%s" style="max-height:90px;display:block" alt="logo">' % logo
+    if not txt_html:
+        return img
+    # جدول dir=ltr: الخلية الأولى (اللوجو) تظهر على الشمال والنص على يمينها
+    return ('<table dir="ltr" style="border-collapse:collapse"><tr>'
+            '<td style="vertical-align:top;padding-right:16px">%s</td>'
+            '<td style="vertical-align:top">%s</td></tr></table>') % (img, txt_html)
 
 
 def internal_deliver(from_email, from_name, to_email, subject, body_html,
@@ -2078,13 +2093,19 @@ def _fill_placeholders(text, emp):
         except (KeyError, IndexError):
             return ""
     name = g("name")
+    # الهاتف والموقع ثابتان لكل التواقيع (موحّدان من الإعدادات) — وليس من حقل الموظف
+    company_phone = get_setting("company_phone", "920035640")
+    company_site = get_setting("company_website", "www.solutionstech.sa")
     mapping = {
         "{name}": name,
         "{first_name}": name.split(" ")[0] if name else "",
         "{email}": g("email"),
         "{title}": g("title"),
         "{department}": g("department"),
-        "{phone}": g("phone"),
+        "{phone}": company_phone,
+        "{company_phone}": company_phone,
+        "{website}": company_site,
+        "{site}": company_site,
     }
     for key, val in mapping.items():
         text = text.replace(key, val)
@@ -2300,7 +2321,7 @@ def _process_batch_inner(limit):
                 account["signature"] if "signature" in account.keys() else "", acc_as_entity)
             acc_sig = "\n".join(ln for ln in acc_sig.split("\n")
                                 if ln.strip() not in ("", "هاتف:", "Phone:", "Tel:")).strip()
-            acc_logo = account["logo"] if "logo" in account.keys() else ""
+            acc_logo = _effective_logo(account["logo"] if "logo" in account.keys() else "")
             sig_html = _signature_html(acc_sig, acc_logo)
             if sig_html:
                 html += "<br><br>" + sig_html
@@ -2609,10 +2630,8 @@ def flush_reverse_queue(limit=None):
             is_internal = _email_domain_internal(conn, row["emp_email"])
             if is_internal:
                 # رد داخلي: يتسلّم في صندوق الحساب الرئيسي داخل البرنامج
-                html = _text_to_html(body)
-                if sig_logo:
-                    html += ('<br><img src="%s" style="max-height:90px;margin-top:8px" '
-                             'alt="logo">' % sig_logo)
+                # اللوجو الموحّد على الشمال والنص على اليمين
+                html = _signature_html(body, _effective_logo(sig_logo))
                 ok, res = internal_deliver(row["emp_email"], row["name"] or "",
                                            row["account_email"], subject,
                                            html, in_reply_to=in_reply_to, conn=conn,
@@ -3715,11 +3734,43 @@ TEMPLATES_TPL = """
  <div class="sig-sub">التوقيع اللي بيتحط تلقائياً في إيميلات الموظفين. (قوالب الرسائل المرسلة صفحة منفصلة في القائمة.)</div>
 
  <div class="sig-card">
+  <div class="sig-card-h"><i class="bi bi-building-fill-check"></i> بيانات ثابتة لكل التواقيع</div>
+  <div class="sig-card-b">
+   <div class="sig-hint">الهاتف والموقع واللوجو دول <b>موحّدين</b> على كل التواقيع (الجديدة والقديمة):
+    <code>{phone}</code> بيطلع الهاتف، <code>{website}</code> بيطلع الموقع، واللوجو بيظهر
+    <b>على شمال التوقيع</b>. ارفع صورة واحدة وتتطبّق على الكل.</div>
+   <form method="POST" action="{{ url_for('save_company_info') }}" enctype="multipart/form-data">
+    <div class="row g-3">
+     <div class="col-md-4">
+      <label class="small text-muted mb-1">الهاتف الموحّد</label>
+      <input name="company_phone" class="form-control" dir="ltr" value="{{ company_phone }}"></div>
+     <div class="col-md-4">
+      <label class="small text-muted mb-1">الموقع الموحّد</label>
+      <input name="company_website" class="form-control" dir="ltr" value="{{ company_website }}"></div>
+     <div class="col-md-4">
+      <label class="small text-muted mb-1">لوجو موحّد لكل التواقيع (أقصى 600KB)</label>
+      <input name="logo" type="file" accept="image/*" class="form-control form-control-sm sig-file"></div>
+    </div>
+    <div class="d-flex align-items-center gap-3 mt-3 flex-wrap">
+     <button class="sig-btn"><i class="bi bi-check-lg"></i> حفظ البيانات الثابتة</button>
+     {% if global_logo %}
+      <span class="small text-muted">اللوجو الحالي:</span>
+      <img src="{{ global_logo }}" class="sig-logo" alt="logo">
+      <label class="small"><input type="checkbox" name="remove_logo"> حذف اللوجو الموحّد</label>
+     {% else %}<span class="small text-muted">لا يوجد لوجو موحّد بعد.</span>{% endif %}
+    </div>
+   </form>
+  </div>
+ </div>
+
+ <div class="sig-card">
   <div class="sig-card-h"><i class="bi bi-globe2"></i> قالب التوقيع العام</div>
   <div class="sig-card-b">
    <div class="sig-hint">يُطبَّق على أي موظف مالوش توقيع خاص ولا حسابه الرئيسي له توقيع. المتغيرات:
-    <code>{name}</code> <code>{title}</code> <code>{department}</code> <code>{phone}</code> <code>{email}</code> —
-    السطر اللي متغيّره فاضي بيتشال تلقائياً.</div>
+    <code>{name}</code> <code>{title}</code> <code>{department}</code> <code>{email}</code>
+    <code>{phone}</code> <code>{website}</code> —
+    (<code>{phone}</code> و<code>{website}</code> قيمتهما ثابتة من «البيانات الثابتة» فوق)
+    والسطر اللي متغيّره فاضي بيتشال تلقائياً.</div>
    <form method="POST" action="{{ url_for('save_signature_template') }}">
     <textarea name="signature_template" class="sig-ta" rows="5">{{ signature_template }}</textarea>
     <div class="mt-2"><button class="sig-btn"><i class="bi bi-check-lg"></i> حفظ قالب التوقيع</button></div>
@@ -3748,8 +3799,12 @@ TEMPLATES_TPL = """
       </div>
       <div class="col-md-6">
        <div class="sig-prev-lbl"><i class="bi bi-eye"></i> معاينة التوقيع</div>
-       <div class="sig-prev" id="sigprev{{ m.id }}"></div>
-       {% if m.logo %}<img src="{{ m.logo }}" class="sig-prev-logo" alt="logo">{% endif %}
+       {% set shown_logo = global_logo or m.logo %}
+       <div dir="ltr" style="display:flex;gap:12px;align-items:flex-start">
+        {% if shown_logo %}<img src="{{ shown_logo }}"
+           style="max-height:80px;border-radius:6px;flex:0 0 auto" alt="logo">{% endif %}
+        <div class="sig-prev" id="sigprev{{ m.id }}" style="flex:1"></div>
+       </div>
       </div>
      </div>
      <div class="row g-2 align-items-center mt-1">
@@ -3798,6 +3853,8 @@ TEMPLATES_TPL = """
  </div>
 </div>
 <script>
+window.COMPANY_PHONE = {{ company_phone|tojson }};
+window.COMPANY_SITE  = {{ company_website|tojson }};
 function empSigFilter(){
  var q=(document.getElementById('empSigSearch').value||'').trim().toLowerCase();
  document.querySelectorAll('.emp-sig-row').forEach(function(r){
@@ -3810,7 +3867,12 @@ function sigPrev(id){
  if(!ta||!box) return;
  var txt=ta.value||ta.getAttribute('placeholder')||'';
  var sample={'{name}':'محمد أحمد','{first_name}':'محمد','{title}':'محاسب أول',
-   '{department}':'المالية','{phone}':'+966 55 000 0000','{email}':(ta.dataset.email||'name@domain.sa')};
+   '{department}':'المالية',
+   '{phone}':(window.COMPANY_PHONE||'920035640'),
+   '{company_phone}':(window.COMPANY_PHONE||'920035640'),
+   '{website}':(window.COMPANY_SITE||'www.solutionstech.sa'),
+   '{site}':(window.COMPANY_SITE||'www.solutionstech.sa'),
+   '{email}':(ta.dataset.email||'name@domain.sa')};
  txt=_esc(txt);
  for(var k in sample){ txt=txt.split(k).join('<b>'+_esc(sample[k])+'</b>'); }
  // احذف الأسطر الفاضية زي ما البرنامج بيعمل
@@ -7905,7 +7967,10 @@ def templates_page():
                            ORDER BY a.email, e.email""").fetchall()
     conn.close()
     return render("templates.html", "توقيع الموظفين", mains=mains, emps=emps,
-                  signature_template=get_setting("signature_template", ""))
+                  signature_template=get_setting("signature_template", ""),
+                  company_phone=get_setting("company_phone", "920035640"),
+                  company_website=get_setting("company_website", "www.solutionstech.sa"),
+                  global_logo=get_setting("global_logo", ""))
 
 
 @app.route("/templates/employee-signature/<int:eid>", methods=["POST"])
@@ -7937,6 +8002,25 @@ def message_templates_page():
 def save_signature_template():
     set_setting("signature_template", request.form.get("signature_template", ""))
     flash("تم حفظ قالب التوقيع", "success")
+    return redirect(url_for("templates_page"))
+
+
+@app.route("/templates/company-info", methods=["POST"])
+def save_company_info():
+    """بيانات ثابتة لكل التواقيع: الهاتف + الموقع + اللوجو الموحّد."""
+    f = request.form
+    set_setting("company_phone", (f.get("company_phone", "") or "").strip())
+    set_setting("company_website", (f.get("company_website", "") or "").strip())
+    if f.get("remove_logo"):
+        set_setting("global_logo", "")
+        flash("تم حذف اللوجو الموحّد + حفظ الهاتف والموقع", "success")
+    else:
+        logo = _logo_data_uri(request.files.get("logo"))
+        if logo:
+            set_setting("global_logo", logo)
+            flash("تم حفظ اللوجو الموحّد + الهاتف والموقع لكل التواقيع", "success")
+        else:
+            flash("تم حفظ الهاتف والموقع لكل التواقيع", "success")
     return redirect(url_for("templates_page"))
 
 
