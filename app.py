@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.8"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.9"        # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3911,8 +3911,25 @@ TEMPLATES_TPL = """
  </div>
 
  <div class="sig-card">
-  <div class="sig-card-h"><i class="bi bi-person-badge"></i> توقيع لكل حساب رئيسي (بلوجو)</div>
+  <div class="sig-card-h"><i class="bi bi-person-badge"></i> توقيع الحسابات الرئيسية</div>
   <div class="sig-card-b">
+   {% if signature_style != 'text' %}
+   <div class="alert alert-success py-2 small mb-3"><i class="bi bi-check-circle-fill"></i>
+    التصميم الاحترافي مفعّل على <b>كل الحسابات</b> — بيتولّد تلقائياً من بيانات كل حساب
+    + اللوجو الموحّد. مش محتاج تكتب حاجة.</div>
+   {% for m in mains %}
+   <div class="sig-acc">
+    <div class="sig-acc-top">
+     <span class="em" dir="ltr">{{ m.email }}</span>
+     <span class="nm">{{ m.display_name }}</span>
+    </div>
+    <div dir="ltr" style="background:#eceff1;border-radius:8px;padding:16px;overflow:auto">
+     {{ main_rich[m.id]|safe }}</div>
+   </div>
+   {% else %}
+   <p class="text-muted mb-0 small">مفيش حسابات رئيسية لسه.</p>
+   {% endfor %}
+   {% else %}
    <div class="sig-hint">التوقيع اللي تحطه لحساب رئيسي بيتطبّق عليه <b>وعلى كل موظفيه</b> تلقائياً.
     الأولوية: توقيع الموظف الخاص ← توقيع حسابه الرئيسي ← قالب التوقيع العام.</div>
    {% for m in mains %}
@@ -3940,7 +3957,7 @@ TEMPLATES_TPL = """
       </div>
      </div>
      <div class="row g-2 align-items-center mt-1">
-      <div class="col-md-7"><label class="small text-muted mb-1">لوجو / صورة (أقصى 600KB)</label>
+      <div class="col-md-7"><label class="small text-muted mb-1">لوجو / صورة (أقصى 3 ميجا)</label>
        <input name="logo" type="file" accept="image/*" class="form-control form-control-sm sig-file"></div>
       <div class="col-md-5 text-md-end pt-2">
        {% if m.logo %}<label class="small me-2"><input type="checkbox" name="remove_logo"> حذف اللوجو</label>{% endif %}
@@ -3951,12 +3968,35 @@ TEMPLATES_TPL = """
    {% else %}
    <p class="text-muted mb-0 small">مفيش حسابات رئيسية لسه — أنشئها من صفحة الدومينات أو الحسابات المرسِلة.</p>
    {% endfor %}
+   {% endif %}
   </div>
  </div>
 
  <div class="sig-card" id="emps">
-  <div class="sig-card-h"><i class="bi bi-people-fill"></i> توقيع كل موظف (يتغلّب على توقيع الحساب الرئيسي)</div>
+  <div class="sig-card-h"><i class="bi bi-people-fill"></i> توقيع كل الموظفين (مطبّق على الكل)</div>
   <div class="sig-card-b">
+   {% if signature_style != 'text' %}
+   <div class="alert alert-success py-2 small mb-3"><i class="bi bi-check-circle-fill"></i>
+    التصميم الاحترافي مطبّق على <b>كل الموظفين الحاليين والجدد</b> — بيتولّد لحظة الإرسال من
+    بيانات كل موظف (الاسم/المنصب/القسم/الإيميل) + الهاتف/الموقع/اللوجو الموحّدين.</div>
+   <input id="empSigSearch" class="sig-ta mb-3" style="font-family:inherit"
+          placeholder="بحث بالاسم أو البريد أو الإقامة أو الرقم الوظيفي…"
+          onkeyup="empSigFilter()" autocomplete="off">
+   {% for e in emps %}
+   <div class="sig-acc emp-sig-row"
+        data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ (e.iqama or '') ~ ' ' ~ (e.emp_number or ''))|lower }}">
+    <div class="sig-acc-top">
+     <span class="em" dir="ltr">{{ e.email }}</span>
+     <span class="nm">{{ e.name }}</span>
+     <span class="nm">· حسابه: <b>{{ e.owner_name or e.owner_email or 'غير مربوط' }}</b></span>
+    </div>
+    <div dir="ltr" style="background:#eceff1;border-radius:8px;padding:16px;overflow:auto">
+     {{ emp_rich[e.id]|safe }}</div>
+   </div>
+   {% else %}
+   <p class="text-muted mb-0 small">مفيش موظفين لسه.</p>
+   {% endfor %}
+   {% else %}
    <div class="sig-hint">كل موظف يرث توقيع حسابه الرئيسي تلقائياً. اكتب توقيع خاص هنا واحفظ عشان يتغلّب عليه —
     سيبه فاضي واحفظ عشان يرجع يرث توقيع الحساب الرئيسي.</div>
    <input id="empSigSearch" class="sig-ta mb-3" style="font-family:inherit"
@@ -3981,6 +4021,7 @@ TEMPLATES_TPL = """
    {% else %}
    <p class="text-muted mb-0 small">مفيش موظفين لسه.</p>
    {% endfor %}
+   {% endif %}
   </div>
  </div>
 </div>
@@ -8099,17 +8140,25 @@ def templates_page():
                            FROM employees e LEFT JOIN accounts a ON a.id = e.owner_account_id
                            ORDER BY a.email, e.email""").fetchall()
     glogo = get_setting("global_logo", "")
+    style = get_setting("signature_style", "rich")
     # معاينة توضيحية للتصميم ببيانات مثال كاملة (كل الصفوف تظهر)
     rich_preview = _rich_signature_html(
         {"name": "Fahad Al Harbi", "title": "Human Resources",
          "department": "Dammam", "email": "fahad@solutionstech.sa"}, glogo)
+    # معاينة لكل حساب/موظف ببياناته الحقيقية (بدون لوجو لتخفيف حجم الصفحة)
+    main_rich = {m["id"]: _rich_signature_html(
+        {"name": m["display_name"] or m["email"], "title": "", "department": "",
+         "email": m["email"]}, "") for m in mains}
+    emp_rich = {e["id"]: _rich_signature_html(
+        {"name": e["name"], "title": e["title"], "department": e["department"],
+         "email": e["email"]}, "") for e in emps}
     conn.close()
     return render("templates.html", "توقيع الموظفين", mains=mains, emps=emps,
                   signature_template=get_setting("signature_template", ""),
                   company_phone=get_setting("company_phone", "920035640"),
                   company_website=get_setting("company_website", "www.solutionstech.sa"),
                   global_logo=glogo, rich_preview=rich_preview,
-                  signature_style=get_setting("signature_style", "rich"))
+                  signature_style=style, main_rich=main_rich, emp_rich=emp_rich)
 
 
 @app.route("/templates/employee-signature/<int:eid>", methods=["POST"])
