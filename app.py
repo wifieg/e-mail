@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.9"        # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.10"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -9022,9 +9022,11 @@ def mail_compose(kind, oid):
         flash("تم إرسال الرسالة إلى %s" % ", ".join(to_list), "success")
         return redirect(back)
 
-    # توقيع المرسِل تلقائياً من السيرفر
+    # توقيع المرسِل تلقائياً من السيرفر (التصميم الاحترافي افتراضياً)
+    style = get_setting("signature_style", "rich")
     conn = get_connection()
     sig_text = ""
+    sig_html = ""
     try:
         if kind == "account":
             a = conn.execute("SELECT signature, logo, display_name, email FROM accounts WHERE id=?",
@@ -9032,25 +9034,32 @@ def mail_compose(kind, oid):
             if a:
                 ent = {"name": a["display_name"] or "", "email": a["email"],
                        "title": "", "department": "", "phone": ""}
-                sig_text = _render_sig_text(a["signature"], ent)
+                if style == "rich":
+                    sig_html = _rich_signature_html(ent, _effective_logo(a["logo"]))
+                else:
+                    sig_text = _render_sig_text(a["signature"], ent)
         else:
             e = conn.execute("SELECT * FROM employees WHERE id=?", (oid,)).fetchone()
             if e:
-                sig_text, _logo = resolve_signature(conn, e)
+                _st, elogo = resolve_signature(conn, e)
+                if style == "rich":
+                    ent = {"name": e["name"], "title": e["title"],
+                           "department": e["department"], "email": e["email"]}
+                    sig_html = _rich_signature_html(ent, _effective_logo(elogo))
+                else:
+                    sig_text = _st
     finally:
         conn.close()
-    # مسافة فوق التوقيع (~3 سم) بحيث يكتب المستخدم فوق والتوقيع تحت
-    sig_block = ("\n" * 8 + sig_text) if sig_text else ""
 
     to = cc = subject = body = ""
     fwd_atts = 0
     heading = "رسالة جديدة"
+    quoted = ""
     if src:
         if mode == "forward":
             heading = "إعادة توجيه"
             subject = src["subject"] if src["subject"].lower().startswith("fwd:") \
                 else "Fwd: " + src["subject"]
-            body = sig_block + "\n\n" + _quote_original(src)
             fwd_atts = len(src["attachments"])
         else:
             heading = "رد على الكل" if mode == "replyall" else "رد"
@@ -9062,10 +9071,17 @@ def mail_compose(kind, oid):
                 others = [a for a in _addr_list(src["to"]) + _addr_list(src["cc"])
                           if a.lower() not in (mine, src["from_email"])]
                 cc = ", ".join(dict.fromkeys(others))
-            body = sig_block + "\n\n" + _quote_original(src)
+        quoted = _quote_original(src)
         back = url_for("mail_message_view", kind=kind, oid=oid, uid=int(uid), f=folder, bare=bare)
+
+    if sig_html:
+        # جسم HTML: مساحة فوق بحيث يكتب المستخدم فوق والتوقيع الاحترافي تحت
+        body = "<br>" * 6 + sig_html
+        if quoted:
+            body += "<br><br>" + _text_to_html(quoted)
     else:
-        body = sig_block
+        sig_block = ("\n" * 8 + sig_text) if sig_text else ""
+        body = sig_block + (("\n\n" + quoted) if quoted else "")
 
     return render("mail_compose.html", heading, kind=kind, oid=oid, meta=meta, folder=folder,
                   mode=mode, uid=uid, heading=heading, to=to, cc=cc, subject=subject,
