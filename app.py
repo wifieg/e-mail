@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.16"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.17"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3556,6 +3556,33 @@ INDEX_TPL = """
  <div class="mt-1 text-muted small"><i class="bi bi-check-circle"></i> كل الخدمات تعمل — لا مشاكل.</div>
  {% endif %}
 </div></div>
+{% endif %}
+{% if emp_alerts is defined %}
+<div class="card mb-2" style="max-width:640px;border-color:{{ '#f56565' if emp_alerts else '#e3e7ee' }}">
+ <div class="card-body py-2">
+ <div class="d-flex align-items-center gap-2 mb-1">
+  <span style="width:34px;height:34px;border-radius:9px;display:grid;place-items:center;
+    background:{{ '#f565651f' if emp_alerts else '#16a34a1f' }};
+    color:{{ '#f56565' if emp_alerts else '#16a34a' }};font-size:1.05rem">
+   <i class="bi {{ 'bi-exclamation-triangle-fill' if emp_alerts else 'bi-people-fill' }}"></i></span>
+  <div class="fw-bold">تنبيهات الموظفين
+   {% if emp_alerts %}<span class="badge bg-danger">{{ emp_alerts|length }}</span>{% endif %}</div>
+ </div>
+ {% if emp_alerts %}
+  <div class="small text-muted mb-1">موظفون يبدو إنهم متوقفون — راجعهم:</div>
+  <div style="max-height:180px;overflow:auto">
+  {% for a in emp_alerts %}
+   <div class="d-flex justify-content-between align-items-center border-bottom py-1 small">
+    <span><b>{{ a.name }}</b> <span class="text-muted" dir="ltr">{{ a.email }}</span></span>
+    <span><span class="badge bg-danger-subtle text-danger">{{ a.reason }}</span>
+     <a class="btn btn-sm btn-outline-primary py-0 px-2" href="{{ url_for('employees') }}">معالجة</a></span>
+   </div>
+  {% endfor %}
+  </div>
+ {% else %}
+  <div class="text-success small"><i class="bi bi-check-circle"></i> كل الموظفين شغّالين — لا تنبيهات.</div>
+ {% endif %}
+ </div></div>
 {% endif %}
 <div class="card"><div class="card-body">
  <h5 class="mb-3">آخر 10 عمليات إرسال</h5>
@@ -7612,6 +7639,22 @@ def index():
     _bks = list_backups()
     db_info["last_backup"] = _bks[0]["mtime"] if _bks else None
     db_info["backup_count"] = len(_bks)
+    # ---- تنبيه ذكي: موظفون «مش شغّالين» ----
+    emp_alerts = []
+    # 1) صندوقه مش متصل رغم إننا جرّبنا الاتصال (نشط + عنده كلمة مرور + آخر فحص فشل)
+    for r in q("""SELECT name, email, emp_last_check FROM employees
+                  WHERE active=1 AND password != '' AND emp_connected=0
+                    AND emp_last_check IS NOT NULL
+                  ORDER BY name""").fetchall():
+        emp_alerts.append({"name": r["name"], "email": r["email"],
+                           "reason": "الصندوق مش متصل", "when": r["emp_last_check"]})
+    # 2) فشل في الرد التلقائي (ردود عكسية فشلت)
+    for r in q("""SELECT e.name, e.email, COUNT(*) c, MAX(rq.sent_at) w
+                  FROM reverse_queue rq JOIN employees e ON e.id=rq.employee_id
+                  WHERE rq.status='failed'
+                  GROUP BY e.id, e.name, e.email ORDER BY c DESC""").fetchall():
+        emp_alerts.append({"name": r["name"], "email": r["email"],
+                           "reason": "فشل الرد التلقائي (%d مرة)" % r["c"], "when": r["w"]})
     conn.close()
     with _health_lock:
         health = {"db": dict(_health["db"]), "smtp": dict(_health["smtp"]),
@@ -7632,7 +7675,7 @@ def index():
          "color": "#805ad5", "href": url_for("distribution")},
     ]
     return render("index.html", "لوحة التحكم", cards=cards, recent=recent, db_info=db_info,
-                  health=health)
+                  health=health, emp_alerts=emp_alerts)
 
 
 # ------------------------------------------------------------------ النسخ الاحتياطي
