@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.14"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.15"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3097,7 +3097,7 @@ BASE_TPL = """
    border-radius:6px;padding:2px 8px;letter-spacing:.3px;pointer-events:none;
    box-shadow:0 1px 3px rgba(0,0,0,.06)}
  .app-shell.full .app-version{display:none}
- .app-main{width:100%;max-width:1520px;margin:0 auto;padding:28px 32px 64px}
+ .app-main{width:100%;max-width:1800px;margin:0 auto;padding:28px 24px 64px}
  @media(max-width:992px){
    .sidebar{transform:translateX(100%)}
    .sidebar.open{transform:translateX(0)}
@@ -3486,6 +3486,11 @@ INDEX_TPL = """
  <form method="post" action="{{ url_for('backup_now') }}" class="d-inline">
   <button class="btn btn-outline-secondary"><i class="bi bi-hdd-stack-fill"></i> نسخة احتياطية الآن</button></form>
 </div>
+<div class="d-flex align-items-center gap-2 mb-2">
+ <span class="small text-muted"><i class="bi bi-arrow-repeat"></i> تحديث تلقائي كل ٥ ثوانٍ</span>
+ <span class="small text-success" id="dashLiveFlag"></span>
+</div>
+<div id="dashLive">
 <div class="row g-3 mb-2">
  {% for c in cards %}
  <div class="col-6 col-md-4 col-xl-2">
@@ -3559,6 +3564,28 @@ INDEX_TPL = """
  </table>
  </div>
 </div></div>
+</div>
+<script>
+// تحديث لحظي للوحة التحكم (البطاقات + صحة النظام + آخر الإرسالات) بدون إعادة تحميل
+(function(){
+ var wrap=document.getElementById('dashLive');
+ if(!wrap) return;
+ function tick(){
+  fetch(location.pathname, {headers:{'X-Requested-With':'fetch'}})
+   .then(function(r){return r.text()})
+   .then(function(html){
+     var doc=new DOMParser().parseFromString(html,'text/html');
+     var fresh=doc.getElementById('dashLive');
+     if(fresh && fresh.innerHTML!==wrap.innerHTML){
+       wrap.innerHTML=fresh.innerHTML;
+       var fl=document.getElementById('dashLiveFlag');
+       if(fl){ fl.textContent='✓ تم التحديث'; setTimeout(function(){fl.textContent='';},1500); }
+     }
+   }).catch(function(){});
+ }
+ setInterval(tick, 5000);
+})();
+</script>
 {% endblock %}
 """
 
@@ -3778,6 +3805,8 @@ EMPLOYEES_TPL = """
   <span class="badge bg-primary" id="bulkCount">0 محدد</span>
   <select id="bulkAction" class="form-select form-select-sm" style="width:auto"
      onchange="document.getElementById('bulkAccWrap').style.display=this.value=='move'?'':'none'">
+   <option value="connect">اتصال بالصناديق</option>
+   <option value="login">إنشاء لوج إن</option>
    <option value="activate">تفعيل</option>
    <option value="deactivate">إيقاف</option>
    <option value="move">نقل لحساب رئيسي</option>
@@ -3810,12 +3839,14 @@ EMPLOYEES_TPL = """
  {% for e in rows %}
  <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ e.department ~ ' ' ~ e.title ~ ' ' ~ (e.iqama or '') ~ ' ' ~ (e.emp_number or ''))|lower }}">
   <td><input type="checkbox" class="emp-chk" value="{{ e.id }}" onclick="empSync()"></td>
-  <td>{{ e.name }}</td><td dir="ltr">{{ e.email }}</td>
+  <td>{{ e.name }}</td><td dir="ltr" class="text-nowrap">{{ e.email }}</td>
   <td dir="ltr">{{ e.iqama or '—' }}</td><td dir="ltr">{{ e.emp_number or '—' }}</td><td>{{ e.title }}</td>
   <td>{{ e.department }}</td><td>{{ e.phone }}</td>
   <td class="small">{% if e.owner_email %}<span class="badge bg-info text-dark">{{ e.owner_name or e.owner_email }}</span>
       {% else %}<a class="text-muted" href="{{ url_for('distribution') }}">— تعيين —</a>{% endif %}</td>
-  <td>{{ '✔' if e.signature else '—' }}</td>
+  <td><button type="button" class="btn btn-sm btn-outline-secondary"
+       onclick="showSig({{ e.id }}, '{{ e.name|replace("'", " ") }}')"
+       title="عرض التوقيع الفعلي"><i class="bi bi-eye"></i> عرض</button></td>
   <td><span class="status-dot {{ 'on' if e.emp_connected else 'off' }}">
       {{ 'متصل' if e.emp_connected else 'غير متصل' }}</span></td>
   <td>{{ '✔' if e.active else '✖' }}</td>
@@ -3936,7 +3967,8 @@ function bulkApply(){
  var ids = empChecked().map(function(c){return c.value;});
  if(!ids.length){ alert('حدّد موظف واحد على الأقل'); return; }
  var act = document.getElementById('bulkAction').value;
- var labels={activate:'تفعيل',deactivate:'إيقاف',move:'نقل',delete:'حذف'};
+ var labels={activate:'تفعيل',deactivate:'إيقاف',move:'نقل',delete:'حذف',
+   connect:'اتصال بصناديق',login:'إنشاء لوج إن لـ'};
  var warn = (act==='delete')
    ? ('⚠️ حذف '+ids.length+' موظف نهائياً؟ لا يمكن التراجع.')
    : ('تأكيد '+labels[act]+' '+ids.length+' موظف؟');
@@ -3951,7 +3983,26 @@ function bulkApply(){
  });
  document.getElementById('bulkForm').submit();
 }
+function showSig(eid, name){
+ var m=document.getElementById('sigModal');
+ document.getElementById('sigModalName').textContent = name||'';
+ document.getElementById('sigModalBody').innerHTML =
+   '<div class="text-center text-muted py-4">… جارِ التحميل</div>';
+ var bs=bootstrap.Modal.getOrCreateInstance(m); bs.show();
+ fetch('/employees/'+eid+'/signature-preview')
+  .then(function(r){return r.text()})
+  .then(function(html){ document.getElementById('sigModalBody').innerHTML=html; })
+  .catch(function(){ document.getElementById('sigModalBody').innerHTML=
+    '<div class="text-danger py-3">تعذّر تحميل التوقيع</div>'; });
+}
 </script>
+
+<div class="modal fade" id="sigModal" tabindex="-1"><div class="modal-dialog modal-lg">
+ <div class="modal-content">
+  <div class="modal-header"><h5 class="modal-title">توقيع: <span id="sigModalName"></span></h5>
+   <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body" id="sigModalBody" style="background:#eceff1"></div>
+ </div></div></div>
 {% endblock %}
 """
 
@@ -7969,6 +8020,55 @@ def employees_bulk():
     elif action == "delete":
         cur.execute(f"DELETE FROM employees WHERE id IN ({ph})", ids)
         msg = "تم حذف %d موظف" % len(ids)
+    elif action == "connect":
+        # اتصال بصناديق الموظفين المحدَّدين في الخلفية
+        conn.close()
+        sel = list(ids)
+
+        def _bulk_connect(sel_ids):
+            c = get_connection()
+            ok = 0
+            for eid in sel_ids:
+                emp = c.execute("SELECT * FROM employees WHERE id=?", (eid,)).fetchone()
+                if emp and emp["password"]:
+                    try:
+                        good, _ = _connect_one_employee(c, emp)
+                        ok += good
+                    except Exception:  # noqa: BLE001
+                        log.exception("bulk connect %s", eid)
+                _stop_event.wait(random.uniform(1, 3))
+            c.close()
+            log.info("اتصال جماعي انتهى: نجح %d من %d", ok, len(sel_ids))
+
+        threading.Thread(target=_bulk_connect, args=(sel,), daemon=True).start()
+        flash("بدأ الاتصال بصناديق %d موظف في الخلفية — راجع عمود «الاتصال» بعد قليل." % len(ids),
+              "info")
+        return redirect(url_for("employees"))
+    elif action == "login":
+        # إنشاء لوج إن للموظفين المحدَّدين (المستخدم=البريد، كلمة المرور=كلمة مرور صندوقه)
+        created = already = 0
+        for eid in ids:
+            emp = cur.execute("SELECT id, email, name, password FROM employees WHERE id=?",
+                              (eid,)).fetchone()
+            if not emp:
+                continue
+            if cur.execute("SELECT 1 FROM users WHERE employee_id=?", (eid,)).fetchone():
+                already += 1
+                continue
+            pw = decrypt_secret(emp["password"]) if emp["password"] else DEFAULT_MAILBOX_PASS
+            try:
+                cur.execute("""INSERT INTO users (username, password_hash, role, employee_id, full_name)
+                               VALUES (?, ?, 'employee', ?, ?)""",
+                            (emp["email"], hash_password(pw), eid, emp["name"]))
+                created += 1
+            except sqlite3.IntegrityError:
+                already += 1
+        conn.commit()
+        conn.close()
+        flash("تم إنشاء لوج إن لـ %d موظف (المستخدم = البريد · كلمة المرور = كلمة مرور صندوقه، "
+              "الافتراضي 022001)%s" % (created,
+              ("، و%d عندهم لوج إن مسبقاً" % already) if already else ""), "success")
+        return redirect(url_for("employees"))
     else:
         conn.close()
         flash("إجراء غير معروف", "error")
@@ -8095,13 +8195,18 @@ def import_employees():
     conn = get_connection()
     cur = conn.cursor()
     added = updated = skipped = 0
+    skipped_rows = []       # (رقم الصف، السبب)
+    dup_rows = []           # صفوف إيميلها مكرر داخل نفس الملف
+    seen_emails = {}        # email → رقم أول صف ظهر فيه
 
     # وضع العناوين: لو أول صف فيه أسماء أعمدة معروفة (name+email) نقرأ حسبها
     colmap = _import_colmap(all_rows[0]) if all_rows else {}
     header_mode = ("name" in colmap and "email" in colmap)
     data_rows = all_rows[1:] if header_mode else all_rows
+    base = 2 if header_mode else 1   # رقم الصف في الإكسل (العنوان = صف 1)
 
     for i, row in enumerate(data_rows):
+        rownum = i + base
         cells = [c.strip() for c in row]
         if header_mode:
             def g(field):
@@ -8112,20 +8217,32 @@ def import_employees():
             phone, pw = g("phone"), g("password")
             iqama, emp_number = g("iqama"), g("emp_number")
         else:
-            if len(cells) < 2:
-                continue
-            name, email = cells[0], cells[1].lower()
+            if not any(cells):
+                continue                                  # صف فاضي تماماً — تجاهل صامت
+            name = cells[0] if len(cells) > 0 else ""
+            email = (cells[1].lower() if len(cells) > 1 else "")
             title = cells[2] if len(cells) > 2 else ""
             department = cells[3] if len(cells) > 3 else ""
             phone = cells[4] if len(cells) > 4 else ""
             pw = cells[5] if len(cells) > 5 else ""
             iqama = cells[6] if len(cells) > 6 else ""
             emp_number = cells[7] if len(cells) > 7 else ""
-            if i == 0 and "@" not in email:          # صف عنوان غير معروف
+            if i == 0 and "@" not in email:               # صف عنوان غير معروف
                 continue
-        if not name or "@" not in email:
+        if not any([name, email] + cells):
+            continue                                       # صف فاضي — تجاهل صامت
+        if not name:
             skipped += 1
+            skipped_rows.append((rownum, "بدون اسم"))
             continue
+        if "@" not in email:
+            skipped += 1
+            skipped_rows.append((rownum, "بريد غير صالح" + (": " + email if email else " (فاضي)")))
+            continue
+        if email in seen_emails:
+            dup_rows.append((rownum, email, seen_emails[email]))
+        else:
+            seen_emails[email] = rownum
         enc_pw = encrypt_secret(pw) if pw else None
         exists = cur.execute("SELECT 1 FROM employees WHERE email=?", (email,)).fetchone()
         if exists:
@@ -8143,7 +8260,14 @@ def import_employees():
             added += 1
     conn.commit()
     conn.close()
-    flash(f"استيراد: {added} جديد، {updated} محدّث، {skipped} متخطّى", "success")
+    msg = "استيراد: %d جديد · %d محدّث · %d متخطّى" % (added, updated, skipped)
+    if dup_rows:
+        ex = "، ".join("صف %d (%s)" % (r, e) for r, e, _ in dup_rows[:5])
+        msg += " · ⚠️ %d إيميل مكرر في الملف (اتحسبوا تحديث مش إضافة): %s" % (len(dup_rows), ex)
+    if skipped_rows:
+        ex = "، ".join("صف %d: %s" % (r, why) for r, why in skipped_rows[:5])
+        msg += " · المتخطّى: " + ex
+    flash(msg, "success" if not (dup_rows or skipped_rows) else "warning")
     return redirect(url_for("employees"))
 
 
@@ -8194,6 +8318,28 @@ def employees_import_template():
         return Response(buf.getvalue().encode("utf-8-sig"), mimetype="text/csv",
                         headers={"Content-Disposition":
                                  "attachment; filename=employees_import_template.csv"})
+
+
+@app.route("/employees/<int:eid>/signature-preview")
+def employee_signature_preview(eid):
+    """يعيد HTML التوقيع الفعلي لموظف (للعرض في نافذة منبثقة)."""
+    conn = get_connection()
+    e = conn.execute("SELECT * FROM employees WHERE id=?", (eid,)).fetchone()
+    if not e:
+        conn.close()
+        abort(404)
+    style = get_setting("signature_style", "rich")
+    elogo = e["logo"] if "logo" in e.keys() else ""
+    if style == "rich":
+        ent = {"name": e["name"], "title": e["title"], "department": e["department"],
+               "email": e["email"]}
+        html = _rich_signature_html(ent, _effective_logo(elogo))
+    else:
+        txt, logo = resolve_signature(conn, e)
+        html = _signature_html(txt, _effective_logo(logo or elogo))
+    conn.close()
+    return "<div style='background:#fff;padding:20px;border-radius:10px'>%s</div>" % (
+        html or "<span style='color:#888'>— لا يوجد توقيع —</span>")
 
 
 @app.route("/employees/export")
