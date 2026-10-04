@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.21"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.22"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -5102,46 +5102,56 @@ function rvEmpFilter(){
 LOGIN_TPL = """
 <!DOCTYPE html><html lang="ar" dir="rtl"><head><meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>تسجيل الدخول · Email Manager</title>
+<title>تسجيل الدخول · Solutions Tech</title>
 <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" rel="stylesheet">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;800&display=swap" rel="stylesheet">
 <style>
  *{box-sizing:border-box}
- body{margin:0;min-height:100vh;background:#f3f2f1;display:flex;align-items:center;justify-content:center;
-   font-family:'Segoe UI','Segoe UI Web',Tahoma,Arial,sans-serif}
+ :root{--st-navy:#14176C;--st-gold:#FCB938}
+ body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;
+   font-family:'Cairo','Segoe UI',Tahoma,Arial,sans-serif;
+   background:radial-gradient(1200px 600px at 85% -10%, rgba(252,185,56,.14), transparent 60%),
+              radial-gradient(1000px 600px at 0% 110%, rgba(20,23,108,.14), transparent 55%),
+              linear-gradient(135deg,#f5f7fc 0%,#eef1f8 100%)}
  .ow-card{width:min(560px,94vw);min-height:560px;background:#fff;
-   border:1px solid #d0cece;border-top:4px solid #0f6cbd;border-radius:10px;
-   box-shadow:0 14px 44px rgba(15,40,80,.18);position:relative;overflow:hidden;
+   border:1px solid #e3e6f0;border-top:5px solid var(--st-gold);border-radius:16px;
+   box-shadow:0 22px 60px rgba(20,23,108,.20);position:relative;overflow:hidden;
    padding:40px 56px 28px;display:flex;flex-direction:column}
+ .ow-card::before{content:"";position:absolute;inset:0 0 auto 0;height:5px;
+   background:linear-gradient(90deg,var(--st-gold),#ffd16b,var(--st-gold))}
  .ow-close{position:absolute;top:14px;left:16px;color:#d13438;font-size:1.25rem;
    width:34px;height:34px;border-radius:8px;background:none;border:none;cursor:pointer;
    line-height:1;display:flex;align-items:center;justify-content:center;transition:.15s}
  .ow-close:hover{background:#fde7e9;color:#a4262c}
- .ow-brand{display:flex;align-items:center;justify-content:center;gap:12px;margin-top:70px;margin-bottom:60px}
- .ow-logo{width:52px;height:52px;border-radius:7px;
-   background:linear-gradient(135deg,#0f6cbd 0%,#28a8ea 60%,#0f6cbd 100%);
-   display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(15,108,189,.35)}
- .ow-logo i{color:#fff;font-size:1.7rem}
- .ow-brand .ow-name{font-size:2.6rem;color:#0f6cbd;font-weight:400;letter-spacing:.5px}
+ .ow-brand{display:flex;flex-direction:column;align-items:center;gap:10px;margin-top:40px;margin-bottom:42px}
+ .ow-brand img{width:min(300px,72%);height:auto;display:block}
+ .ow-brand .fallback{display:none;font-size:2rem;font-weight:800;color:var(--st-navy);letter-spacing:1px}
+ .ow-brand .rule{width:64px;height:4px;border-radius:3px;background:var(--st-gold)}
+ .ow-brand .tag{font-size:.9rem;color:#6b7280;font-weight:600}
  .ow-body{flex:1;display:flex;flex-direction:column}
  .ow-lbl{font-size:.92rem;color:#242424;margin-bottom:6px;font-weight:600}
  .ow-inp{width:100%;border:none;border-bottom:2px solid #605e5c;background:transparent;
    padding:9px 2px;font-size:1rem;color:#242424;outline:none}
- .ow-inp:focus{border-bottom-color:#0f6cbd}
+ .ow-inp:focus{border-bottom-color:var(--st-navy)}
  .ow-inp::placeholder{color:#a19f9d}
  .ow-field{margin-bottom:26px}
  .ow-remember{display:flex;align-items:center;gap:8px;font-size:.9rem;color:#242424;
    margin:-8px 0 18px;cursor:pointer;user-select:none}
- .ow-remember input{width:16px;height:16px;accent-color:#0f6cbd;cursor:pointer}
+ .ow-remember input{width:16px;height:16px;accent-color:var(--st-navy);cursor:pointer}
  .ow-adv{text-align:center;font-weight:700;color:#242424;font-size:.95rem;margin:8px 0 4px;
    cursor:pointer;user-select:none}
  .ow-adv i{font-size:.8rem}
  .ow-alert{background:#fde7e9;border:1px solid #f3b5bb;color:#a4262c;border-radius:2px;
    padding:8px 12px;font-size:.88rem;margin-bottom:14px}
- .ow-alert.info{background:#eff6fc;border-color:#b3d3f0;color:#0f6cbd}
+ .ow-alert.info{background:#eef0fb;border-color:#c3c7ea;color:var(--st-navy)}
  .ow-foot{margin-top:auto;padding-top:24px}
- .ow-btn{width:100%;border:1px solid #0f6cbd;background:#0f6cbd;color:#fff;
-   padding:11px;font-size:1rem;border-radius:2px;cursor:pointer;transition:.15s}
- .ow-btn:hover{background:#115ea3;border-color:#115ea3}
+ .ow-btn{width:100%;border:none;background:var(--st-navy);color:#fff;font-family:inherit;
+   padding:13px;font-size:1.05rem;font-weight:700;border-radius:10px;cursor:pointer;transition:.15s;
+   box-shadow:0 6px 18px rgba(20,23,108,.28)}
+ .ow-btn:hover{background:#0e1050;box-shadow:0 8px 22px rgba(20,23,108,.36)}
+ .ow-btn:active{transform:translateY(1px)}
  .ow-legal{position:fixed;bottom:10px;right:14px;left:14px;display:flex;align-items:center;gap:22px;
    font-size:.82rem;color:#605e5c}
  .ow-legal a{color:#605e5c;text-decoration:none}
@@ -5151,7 +5161,7 @@ LOGIN_TPL = """
  .ow-manual.open{max-height:60px}
  .ow-manual-lbl{display:flex;align-items:center;gap:8px;font-size:.9rem;color:#242424;
    margin:10px 0 4px;cursor:pointer;user-select:none}
- .ow-manual-lbl input{width:16px;height:16px;accent-color:#0f6cbd;cursor:pointer}
+ .ow-manual-lbl input{width:16px;height:16px;accent-color:var(--st-navy);cursor:pointer}
  #owAdvChev{transition:transform .2s}
  #owAdvChev.up{transform:rotate(180deg)}
  /* شاشة الإعداد المتقدم */
@@ -5162,21 +5172,24 @@ LOGIN_TPL = """
  .ow-adv-brand{display:flex;align-items:center;gap:9px;margin:6px 0 26px}
  .ow-logo.sm{width:30px;height:30px;border-radius:5px}
  .ow-logo.sm i{font-size:1rem}
- .ow-adv-name{font-size:1.15rem;color:#0f6cbd;font-weight:600}
+ .ow-adv-name{font-size:1.15rem;color:var(--st-navy);font-weight:700}
  .ow-adv-title{font-size:1.5rem;font-weight:700;color:#242424;margin:0 0 26px}
  .ow-prov{display:grid;grid-template-columns:repeat(4,1fr);gap:24px 10px;flex:1;align-content:start}
  .ow-prov-tile{display:flex;flex-direction:column;align-items:center;gap:9px;cursor:pointer;
    font-size:.82rem;color:#242424;text-align:center;padding:8px 4px;border-radius:8px;transition:.15s}
  .ow-prov-tile:hover{background:#eff6fc}
  .ow-prov-tile .pi{font-size:2.1rem;line-height:1}
- .ow-goback{margin-top:18px;color:#0f6cbd;text-decoration:none;font-size:.95rem}
+ .ow-goback{margin-top:18px;color:var(--st-navy);text-decoration:none;font-size:.95rem}
  .ow-goback:hover{text-decoration:underline}
 </style></head><body>
 <div class="ow-card">
  <button type="button" class="ow-close" onclick="history.length>1?history.back():null" title="إغلاق"><i class="bi bi-x-lg"></i></button>
  <div class="ow-brand">
-  <span class="ow-logo"><i class="bi bi-envelope-fill"></i></span>
-  <span class="ow-name">Email Manager</span>
+  <img src="https://solutionstech.sa/storage/logo/22-removebg-preview.png" alt="Solutions Tech"
+       onerror="this.style.display='none';document.getElementById('owFallback').style.display='block'">
+  <div class="fallback" id="owFallback">SOLUTIONS <span style="color:var(--st-gold)">TECH</span></div>
+  <div class="rule"></div>
+  <div class="tag">نظام إدارة البريد</div>
  </div>
  <form method="POST" class="ow-body">
   {% with msgs = get_flashed_messages(with_categories=true) %}
@@ -5205,17 +5218,16 @@ LOGIN_TPL = """
 <div class="ow-advscreen" id="owAdvScreen">
  <div class="ow-card ow-adv-card">
   <button type="button" class="ow-close" id="owAdvClose" title="إغلاق"><i class="bi bi-x-lg"></i></button>
-  <div class="ow-adv-brand"><span class="ow-logo sm"><i class="bi bi-envelope-fill"></i></span>
-   <span class="ow-adv-name">Email Manager</span></div>
+  <div class="ow-adv-brand"><img src="https://solutionstech.sa/storage/logo/22-removebg-preview.png" alt="Solutions Tech" style="height:34px;width:auto"><span class="ow-adv-name">Solutions Tech</span></div>
   <h5 class="ow-adv-title">الإعداد المتقدم</h5>
   <div class="ow-prov">
    <div class="ow-prov-tile" data-p="microsoft"><span class="pi" style="color:#d83b01"><i class="bi bi-microsoft"></i></span><span>Microsoft 365</span></div>
-   <div class="ow-prov-tile" data-p="outlook"><span class="pi" style="color:#0f6cbd"><i class="bi bi-envelope-fill"></i></span><span>Outlook.com</span></div>
-   <div class="ow-prov-tile" data-p="exchange"><span class="pi" style="color:#0f6cbd"><i class="bi bi-diagram-3-fill"></i></span><span>Exchange</span></div>
+   <div class="ow-prov-tile" data-p="outlook"><span class="pi" style="color:#14176C"><i class="bi bi-envelope-fill"></i></span><span>Outlook.com</span></div>
+   <div class="ow-prov-tile" data-p="exchange"><span class="pi" style="color:#14176C"><i class="bi bi-diagram-3-fill"></i></span><span>Exchange</span></div>
    <div class="ow-prov-tile" data-p="google"><span class="pi" style="color:#ea4335"><i class="bi bi-google"></i></span><span>Google</span></div>
    <div class="ow-prov-tile" data-p="pop"><span class="pi" style="color:#e0a336"><i class="bi bi-envelope"></i></span><span>POP</span></div>
    <div class="ow-prov-tile" data-p="imap"><span class="pi" style="color:#e0a336"><i class="bi bi-envelope-open"></i></span><span>IMAP</span></div>
-   <div class="ow-prov-tile" data-p="exchange2013"><span class="pi" style="color:#0f6cbd"><i class="bi bi-diagram-3"></i></span><span>Exchange 2013<br>أو أقدم</span></div>
+   <div class="ow-prov-tile" data-p="exchange2013"><span class="pi" style="color:#14176C"><i class="bi bi-diagram-3"></i></span><span>Exchange 2013<br>أو أقدم</span></div>
   </div>
   <a href="#" class="ow-goback" id="owGoBack">رجوع</a>
  </div>
