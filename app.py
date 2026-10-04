@@ -5214,7 +5214,6 @@ LOGIN_TPL = """
    أعمالكم في تأجير العمالة والموارد البشرية بنظام أجير.</p>
   <ul class="lg-feats">
    <li><i class="bi bi-people-fill"></i> إدارة الموظفين وصناديق بريدهم باحترافية</li>
-   <li><i class="bi bi-megaphone-fill"></i> حملات بريد مجدولة وردود تلقائية منظّمة</li>
    <li><i class="bi bi-shield-lock-fill"></i> حماية وأرشفة آمنة للبيانات ونسخ احتياطي</li>
    <li><i class="bi bi-graph-up-arrow"></i> متابعة لحظية للإرسال والاستقبال</li>
   </ul>
