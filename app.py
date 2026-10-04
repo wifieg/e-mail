@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.33"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.34"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -715,6 +715,13 @@ def init_db():
     mm_cols = _table_columns(cur, "mail_messages")
     if "campaign_id" not in mm_cols:
         cur.execute("ALTER TABLE mail_messages ADD COLUMN campaign_id INTEGER")
+
+    # القالب: الحسابات المرسِلة له + رد الموظفين الخاص به (إرسال + استقبال داخل القالب)
+    tpl_cols = _table_columns(cur, "templates")
+    if "send_accounts" not in tpl_cols:
+        cur.execute("ALTER TABLE templates ADD COLUMN send_accounts TEXT NOT NULL DEFAULT ''")
+    if "reply_body" not in tpl_cols:
+        cur.execute("ALTER TABLE templates ADD COLUMN reply_body TEXT NOT NULL DEFAULT ''")
 
     # الرسائل صارت تُقرأ حيّاً من السيرفر — لم يعد هناك تخزين محلي لها
     cur.execute("DROP INDEX IF EXISTS idx_inbox_msgid")
@@ -2556,8 +2563,15 @@ def _gi(key, dflt):
         return dflt
 
 
-def _reverse_reply_text(conn, emp, account_email):
-    """نص الرد: نص الحساب المرسِل ← نص القسم ← النص الافتراضي."""
+def _reverse_reply_text(conn, emp, account_email, campaign_id=None):
+    """نص الرد: رد القالب (لو الرسالة من حملة) ← نص الحساب المرسِل ← نص القسم ← الافتراضي."""
+    # 0) رد خاص بالقالب المستخدَم في الحملة (الاستقبال المحدَّد داخل القالب)
+    if campaign_id:
+        trow = conn.execute(
+            """SELECT t.reply_body FROM campaigns c JOIN templates t ON t.id=c.template_id
+               WHERE c.id=?""", (campaign_id,)).fetchone()
+        if trow and (trow["reply_body"] or "").strip():
+            return trow["reply_body"]
     row = conn.execute("""SELECT r.body FROM account_replies r JOIN accounts a ON a.id=r.account_id
                           WHERE lower(a.email)=?""", (account_email.lower(),)).fetchone()
     if row and (row["body"] or "").strip():
@@ -2761,7 +2775,14 @@ def flush_reverse_queue(limit=None):
                    "signature": row["signature"], "logo": row["logo"],
                    "owner_account_id": row["owner_account_id"], "password": row["password"]}
             acct = _emp_account(emp)
-            body_tpl = _reverse_reply_text(conn, emp, row["account_email"])
+            # نحدّد حملة الرسالة الأصلية (uid = id صف mail_messages) لاختيار رد القالب الخاص بها
+            camp_id = None
+            if row["uid"]:
+                _cr = conn.execute("SELECT campaign_id FROM mail_messages WHERE id=?",
+                                   (row["uid"],)).fetchone()
+                if _cr:
+                    camp_id = _cr["campaign_id"]
+            body_tpl = _reverse_reply_text(conn, emp, row["account_email"], camp_id)
             reply_text = _fill_placeholders(body_tpl, emp)
             sig_text, sig_logo = resolve_signature(conn, emp)
             # نص عادي (للسيرفر الخارجي) = الرد + التوقيع النصّي
@@ -4414,6 +4435,26 @@ MSG_TEMPLATES_TPL = """
  .mt-del:hover{background:#fde7e9}
  .mt-vars{color:#6b7280;font-size:.8rem;margin-top:16px;line-height:1.8}
  .mt-vars code{background:#eef2f9;color:#0f6cbd;padding:1px 6px;border-radius:5px;font-size:.78rem}
+ .mt-card-t .nm-btn{background:none;border:none;padding:0;cursor:pointer;text-align:start}
+ .mt-card-t .nm-btn:hover{text-decoration:underline}
+ .mt-cfg{margin-inline-start:auto;background:#eef6ff;border:1px solid #bcd9f5;color:#0f6cbd;
+   font-size:.7rem;font-weight:700;padding:3px 8px;border-radius:20px;cursor:pointer;white-space:nowrap}
+ .mt-cfg:hover{background:#dbeafe}
+ .mt-senders{font-size:.7rem;color:#0a7d33;margin-top:4px;min-height:1em}
+ .mt-senders i{font-size:.72rem}
+ .cfg-sec{border:1px solid #e3e8f0;border-radius:10px;padding:10px 12px;margin-bottom:12px;background:#fbfcfe}
+ .cfg-h{font-weight:700;color:#1f2937;font-size:.92rem;margin-bottom:3px}
+ .cfg-h i{color:#0f6cbd;margin-inline-end:4px}
+ .cfg-note{color:#6b7280;font-size:.76rem;margin-bottom:8px;line-height:1.6}
+ .cfg-accs{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}
+ .cfg-acc{display:flex;align-items:center;gap:6px;border:1px solid #d9e0ec;border-radius:7px;
+   padding:5px 8px;cursor:pointer;background:#fff;font-size:.8rem}
+ .cfg-acc:hover{border-color:#0f6cbd;background:#f4f9ff}
+ .cfg-acc input{margin:0}
+ .cfg-acc span{display:flex;flex-direction:column;line-height:1.25}
+ .cfg-acc small{color:#8a93a5;font-size:.68rem}
+ .cfg-vars{color:#6b7280;font-size:.74rem;margin-top:6px}
+ .cfg-vars code{background:#eef2f9;color:#0f6cbd;padding:1px 5px;border-radius:4px}
 </style>
 <div class="mt-wrap">
  <div class="mt-head"><i class="bi bi-megaphone"></i><h2>قوالب الرسائل المرسلة</h2></div>
@@ -4422,8 +4463,21 @@ MSG_TEMPLATES_TPL = """
   <i class="bi bi-plus-circle"></i> قالب رسالة جديد</button>
  <div class="mt-grid">
  {% for t in rows %}
+  {% set sel = (t.send_accounts or '').split(',') %}
   <div class="mt-card">
-   <div class="mt-card-t"><i class="bi bi-envelope-paper text-primary"></i><span class="nm">{{ t.name }}</span></div>
+   <div class="mt-card-t">
+    <i class="bi bi-envelope-paper text-primary"></i>
+    <button type="button" class="nm nm-btn" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}"
+            title="إعداد الإرسال والاستقبال">{{ t.name }}</button>
+    <button type="button" class="mt-cfg" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}">
+     <i class="bi bi-arrow-left-right"></i> إرسال/استقبال</button>
+   </div>
+   <div class="mt-senders">
+    {% set snames = [] %}
+    {% for a in accs %}{% if a.id|string in sel %}{% set _ = snames.append(a.display_name or a.email) %}{% endif %}{% endfor %}
+    {% if snames %}<i class="bi bi-send-check"></i> المرسِلون: {{ snames|join(' · ') }}{% endif %}
+    {% if (t.reply_body or '').strip() %}<span style="color:#b26a00;margin-inline-start:6px"><i class="bi bi-robot"></i> له رد خاص</span>{% endif %}
+   </div>
    <form method="POST" action="{{ url_for('edit_template', tid=t.id) }}">
     <div class="mt-lbl">اسم القالب</div>
     <input name="name" class="mt-inp" value="{{ t.name }}">
@@ -4438,6 +4492,46 @@ MSG_TEMPLATES_TPL = """
   </div>
  {% else %}<p class="text-muted">لا توجد قوالب رسائل — اضغط «قالب رسالة جديد».</p>{% endfor %}
  </div>
+
+ {# نافذة الإعداد لكل قالب: مين يبعت + رد الموظفين التلقائي عليه #}
+ {% for t in rows %}
+  {% set sel = (t.send_accounts or '').split(',') %}
+  <div class="modal fade" id="cfg{{ t.id }}" tabindex="-1"><div class="modal-dialog modal-lg">
+   <div class="modal-content">
+    <form method="POST" action="{{ url_for('template_config', tid=t.id) }}">
+     <div class="modal-header">
+      <h5 class="modal-title"><i class="bi bi-arrow-left-right text-primary"></i>
+       الإرسال والاستقبال — {{ t.name }}</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+     <div class="modal-body">
+      <div class="cfg-sec">
+       <div class="cfg-h"><i class="bi bi-send"></i> مين اللي يبعت القالب ده؟</div>
+       <div class="cfg-note">اختَر الحسابات الرئيسية المخصّصة لإرسال هذا القالب — بتتسجّل وتظهر على الكارت كمرجع لمين بيبعت القالب ده.</div>
+       <div class="cfg-accs">
+        {% for a in accs %}
+         <label class="cfg-acc">
+          <input type="checkbox" name="send_accounts" value="{{ a.id }}"
+                 {{ 'checked' if a.id|string in sel else '' }}>
+          <span>{{ a.display_name or a.email }}<small>{{ a.email }}</small></span>
+         </label>
+        {% else %}<div class="text-muted small">لا توجد حسابات رئيسية.</div>{% endfor %}
+       </div>
+      </div>
+      <div class="cfg-sec">
+       <div class="cfg-h"><i class="bi bi-robot"></i> رد الموظفين التلقائي على القالب ده (الاستقبال)</div>
+       <div class="cfg-note">لما الموظف يستلم رسالة من هذا القالب، صندوقه يرد تلقائياً بالنص ده.
+        لو سِبته فاضي، يُستخدم رد الحساب المرسِل أو القسم أو الرد الافتراضي.</div>
+       <textarea name="reply_body" class="form-control" rows="6"
+        placeholder="شكراً على رسالتكم، تم الاطلاع وسيتم الرد قريباً.">{{ t.reply_body }}</textarea>
+       <div class="cfg-vars">المتغيرات: <code>{name}</code> <code>{first_name}</code>
+        <code>{title}</code> <code>{department}</code> <code>{phone}</code> <code>{email}</code></div>
+      </div>
+     </div>
+     <div class="modal-footer">
+      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> حفظ الإعدادات</button></div>
+    </form>
+   </div></div></div>
+ {% endfor %}
  <div class="mt-vars">المتغيرات داخل نص الرسالة: <code>{name}</code> <code>{first_name}</code>
   <code>{title}</code> <code>{department}</code> <code>{phone}</code> <code>{email}</code> —
   التوقيع يُضاف تلقائياً حسب الحساب المرسِل، وموضوع الإيميل = اسم القالب.</div>
@@ -9175,6 +9269,24 @@ def delete_template(tid):
     conn.commit()
     conn.close()
     flash("تم حذف القالب", "info")
+    return redirect(url_for("message_templates_page"))
+
+
+@app.route("/templates/<int:tid>/config", methods=["POST"])
+def template_config(tid):
+    """إعداد القالب: الحسابات المرسِلة له + رد الموظفين التلقائي عليه (إرسال + استقبال)."""
+    f = request.form
+    send_accounts = ",".join(a for a in f.getlist("send_accounts") if a.isdigit())
+    reply_body = f.get("reply_body", "")
+    conn = get_connection()
+    if not conn.execute("SELECT 1 FROM templates WHERE id=?", (tid,)).fetchone():
+        conn.close()
+        abort(404)
+    conn.execute("UPDATE templates SET send_accounts=?, reply_body=? WHERE id=?",
+                 (send_accounts, reply_body, tid))
+    conn.commit()
+    conn.close()
+    flash("تم حفظ إعدادات الإرسال والاستقبال للقالب", "success")
     return redirect(url_for("message_templates_page"))
 
 
