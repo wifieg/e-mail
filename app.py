@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.34"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.35"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4777,8 +4777,9 @@ QUICKSEND_TPL = """
  <div class="row">
   <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
     <i class="bi bi-file-earmark-text text-primary"></i> القالب</label>
-   <select name="template_id" class="form-select" required>
-    {% for t in templates %}<option value="{{ t.id }}">{{ t.name }}</option>{% endfor %}
+   <select name="template_id" id="qsTemplate" class="form-select" required>
+    {% for t in templates %}<option value="{{ t.id }}"
+     data-accounts="{{ t.send_accounts or '' }}">{{ t.name }}</option>{% endfor %}
    </select></div>
   <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
     <i class="bi bi-person-badge text-success"></i> الحساب المُرسِل (مجموعته)</label>
@@ -4786,7 +4787,9 @@ QUICKSEND_TPL = """
     <option value="">كل الموظفين ({{ total_emp }})</option>
     {% for a in accs %}<option value="{{ a.id }}">
      {{ a.display_name or a.email }} — {{ a.n_emp }} موظف</option>{% endfor %}
-   </select></div>
+   </select>
+   <div class="form-text" id="qsAutoHint" style="display:none;color:#0a7d33">
+    <i class="bi bi-magic"></i> اتحدّد تلقائيًا من القالب</div></div>
  </div>
  <div class="row">
   <div class="col-6 col-md-3 mb-2"><label class="small">
@@ -4819,6 +4822,29 @@ QUICKSEND_TPL = """
   var s=document.getElementById('qsSendTime'), r=document.getElementById('qsReplyTime');
   if(s) s.value=hh+':'+mm; if(r) r.value=hh+':'+mm;
  }catch(e){}
+})();
+// لما تختار قالب: الحساب المرسِل يتظبط تلقائيًا على أول حساب معلّم عليه في القالب
+(function(){
+ var tpl=document.getElementById('qsTemplate');
+ var acc=document.querySelector('select[name="scope_account"]');
+ var hint=document.getElementById('qsAutoHint');
+ if(!tpl||!acc) return;
+ function apply(){
+  var opt=tpl.options[tpl.selectedIndex];
+  var ids=((opt&&opt.getAttribute('data-accounts'))||'').split(',').filter(Boolean);
+  if(ids.length){
+   // اختر أول حساب متاح في القائمة من حسابات القالب
+   var picked=false;
+   for(var i=0;i<ids.length && !picked;i++){
+    for(var j=0;j<acc.options.length;j++){
+     if(acc.options[j].value===ids[i]){ acc.value=ids[i]; picked=true; break; }
+    }
+   }
+   if(hint) hint.style.display = picked ? '' : 'none';
+  } else { if(hint) hint.style.display='none'; }
+ }
+ tpl.addEventListener('change', apply);
+ apply(); // عند فتح الصفحة
 })();
 </script>
 {% endif %}
@@ -9340,7 +9366,8 @@ def campaigns():
 def quick_send():
     """شاشة إرسال سريع: قالب + حساب + تواريخ في مكان واحد → حملة فوراً."""
     conn = get_connection()
-    templates = conn.execute("SELECT id, name FROM templates ORDER BY name").fetchall()
+    templates = conn.execute(
+        "SELECT id, name, send_accounts FROM templates ORDER BY name").fetchall()
     accs = conn.execute(
         "SELECT id, email, display_name, "
         "(SELECT COUNT(*) FROM employees e WHERE e.owner_account_id=accounts.id "
