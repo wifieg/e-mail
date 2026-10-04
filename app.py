@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.32"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.33"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -8129,13 +8129,16 @@ def dedup_mail_data():
     _run("""DELETE FROM mail_messages WHERE campaign_id IS NOT NULL AND id NOT IN (
               SELECT MIN(id) FROM mail_messages WHERE campaign_id IS NOT NULL
               GROUP BY box_email, folder, campaign_id)""")
-    # 2) الردود (وبقية الرسائل): رسالة واحدة لكل (صندوق، مجلد، معرّف الرد) لما يكون فيه in_reply_to
+    # 2) الردود: رد واحد لكل محادثة (مالك الصندوق، المجلد، المُرسِل، المُستقبِل).
+    #    النسخة القديمة كانت تبعت نفس الحملة أكثر من مرة بمعرّفات مختلفة، فكل رد له
+    #    in_reply_to مختلف — فنجمّع حسب طرفَي المحادثة لا حسب المعرّف، فيتبقى رد واحد
+    #    لكل موظف↔حساب (في صندوق الوارد وفي صندوق الصادر على السواء).
     _run("""DELETE FROM mail_messages WHERE in_reply_to IS NOT NULL AND in_reply_to<>'' AND id NOT IN (
               SELECT MIN(id) FROM mail_messages WHERE in_reply_to IS NOT NULL AND in_reply_to<>''
-              GROUP BY box_email, folder, in_reply_to)""")
-    # 3) سجل الردود العكسية: رد واحد لكل (موظف، معرّف الرسالة الأصلية)
+              GROUP BY lower(box_email), folder, lower(from_email), lower(to_email))""")
+    # 3) سجل الردود العكسية: رد واحد لكل (موظف، الحساب المُرسَل إليه)
     _run("""DELETE FROM emp_replies WHERE id NOT IN (
-              SELECT MIN(id) FROM emp_replies GROUP BY employee_id, in_reply_to)""")
+              SELECT MIN(id) FROM emp_replies GROUP BY employee_id, lower(sender_account))""")
     # 4) سجل الإرسال: سطر واحد لكل (حملة، موظف)
     _run("""DELETE FROM sent_emails WHERE campaign_id IS NOT NULL AND id NOT IN (
               SELECT MIN(id) FROM sent_emails WHERE campaign_id IS NOT NULL
