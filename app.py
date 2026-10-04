@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.30"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.31"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4700,22 +4700,33 @@ QUICKSEND_TPL = """
    <input name="send_date" type="date" class="form-control" value="{{ today }}" required></div>
   <div class="col-6 col-md-3 mb-2"><label class="small">
     <i class="bi bi-clock"></i> ساعة الإرسال</label>
-   <input name="send_time" type="time" class="form-control" value="12:00" required></div>
+   <input name="send_time" id="qsSendTime" type="time" class="form-control" value="12:00" required></div>
   <div class="col-6 col-md-3 mb-2"><label class="small">
     <i class="bi bi-reply-fill text-success"></i> تاريخ الرد</label>
    <input name="reply_date" type="date" class="form-control" value="{{ today }}" required></div>
   <div class="col-6 col-md-3 mb-2"><label class="small">
     <i class="bi bi-clock-history"></i> ساعة الرد</label>
-   <input name="reply_time" type="time" class="form-control" value="12:00" required></div>
+   <input name="reply_time" id="qsReplyTime" type="time" class="form-control" value="12:00" required></div>
  </div>
  <div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle text-primary"></i>
-  اسم الحملة هيتحط تلقائياً (اسم القالب + التاريخ)، وكل الموظفين هيدخلوا قائمة الإرسال.
-  ممكن بعدها تعدّل التواريخ أو تكرّر الحملة من صفحة <a href="{{ url_for('campaigns') }}">الحملات</a>.</div>
+  الوقت مضبوط على <b>الآن</b> فالحملة تتبعت فورًا وتتوزّع خلال دقيقة. الاسم بيتحط تلقائيًا،
+  وتقدر تتابع الإرسال <b>لحظيًا</b> في صفحة <a href="{{ url_for('campaigns') }}">الحملات</a>.</div>
  <div class="d-flex gap-2">
   <button class="btn btn-primary btn-lg"><i class="bi bi-rocket-takeoff"></i> أنشئ وأرسل</button>
   <a class="btn btn-outline-secondary" href="{{ url_for('campaigns') }}">الحملات المتقدّمة</a>
  </div>
 </form>
+<script>
+// اضبط وقت الإرسال/الرد على الآن (توقيت المتصفح) عشان الإرسال يبدأ فورًا
+(function(){
+ try{
+  var now=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Riyadh'}));
+  var hh=('0'+now.getHours()).slice(-2), mm=('0'+now.getMinutes()).slice(-2);
+  var s=document.getElementById('qsSendTime'), r=document.getElementById('qsReplyTime');
+  if(s) s.value=hh+':'+mm; if(r) r.value=hh+':'+mm;
+ }catch(e){}
+})();
+</script>
 {% endif %}
 {% endblock %}
 """
@@ -9274,8 +9285,8 @@ def add_campaign():
     conn.commit()
     conn.close()
     extra = f" · {dept_map} قسم بقالب مخصّص" if dept_map else ""
-    flash(f"أُنشئت الحملة بـ {len(emps)} مستلماً{extra}", "success")
-    return redirect(url_for("campaign_detail", cid=cid))
+    flash(f"أُنشئت الحملة بـ {len(emps)} مستلماً — تابع الإرسال لحظيًا هنا.{extra}", "success")
+    return redirect(url_for("campaigns"))
 
 
 @app.route("/campaigns/<int:cid>")
