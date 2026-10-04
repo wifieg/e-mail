@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.37"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.38"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4857,11 +4857,23 @@ EMP2ACC_TPL = """
 <div class="d-flex align-items-center gap-2 mb-1">
  <h1 class="mb-0"><i class="bi bi-arrow-left-right text-primary"></i> الموظف يرسل للحساب</h1></div>
 <div class="text-muted small mb-3">العكس: <b>الموظفون</b> يبعتوا إيميل لحسابهم الرئيسي،
- و<b>الحساب الرئيسي</b> يرد عليهم تلقائيًا — تسليم داخلي فوري.</div>
+ و<b>الحساب الرئيسي</b> يرد عليهم — بنفس نظام القوالب، وبتاريخ ووقت للإرسال وللرد.</div>
 
+{% if not templates %}
+ <div class="alert alert-warning">أضف <b>قالب رسالة</b> أولاً من
+  <a href="{{ url_for('message_templates_page') }}">قوالب الرسائل المرسلة</a>.</div>
+{% else %}
 <form method="POST" action="{{ url_for('emp_to_account_send') }}" class="card card-body"
-      style="max-width:780px">
+      style="max-width:820px">
  <div class="row">
+  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
+    <i class="bi bi-file-earmark-text text-primary"></i> قالب رسالة الموظف</label>
+   <select name="template_id" id="e2aTemplate" class="form-select" required>
+    {% for t in templates %}<option value="{{ t.id }}"
+     data-name="{{ t.name }}"
+     data-reply="{{ (t.reply_body or '')|e }}">{{ t.name }}</option>{% endfor %}
+   </select>
+   <div class="form-text">نص القالب هو اللي الموظف هيبعته لحسابه الرئيسي (+ توقيع الموظف تلقائيًا).</div></div>
   <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
     <i class="bi bi-person-badge text-success"></i> الموظفون (حسب الحساب الرئيسي)</label>
    <select name="scope_account" class="form-select">
@@ -4869,45 +4881,74 @@ EMP2ACC_TPL = """
     {% for a in accs %}<option value="{{ a.id }}">
      {{ a.display_name or a.email }} — {{ a.n_emp }} موظف</option>{% endfor %}
    </select></div>
+ </div>
+ <div class="row">
   <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
     <i class="bi bi-diagram-3 text-primary"></i> القسم (اختياري)</label>
    <select name="department" class="form-select">
     <option value="">كل الأقسام</option>
     {% for d in depts %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
    </select></div>
+  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
+    <i class="bi bi-card-heading"></i> موضوع الرسالة</label>
+   <input name="subject" id="e2aSubject" class="form-control"
+          placeholder="(اسم القالب تلقائيًا)"></div>
  </div>
- <div class="mb-3"><label class="fw-semibold mb-1">
-   <i class="bi bi-card-heading"></i> موضوع الرسالة</label>
-  <input name="subject" class="form-control" placeholder="رسالة من الموظف" value=""></div>
- <div class="mb-3"><label class="fw-semibold mb-1">
-   <i class="bi bi-envelope-arrow-up text-success"></i> نص رسالة الموظف (اللي هيبعتها للحساب)</label>
-  <textarea name="emp_msg" class="form-control" rows="4" required
-   placeholder="السلام عليكم، ..."></textarea>
-  <div class="form-text">المتغيرات: <code>{name}</code> <code>{first_name}</code>
-   <code>{title}</code> <code>{department}</code> <code>{email}</code> — ويُضاف توقيع الموظف تلقائيًا.</div></div>
  <div class="mb-3"><label class="fw-semibold mb-1">
    <i class="bi bi-envelope-arrow-down text-primary"></i> رد الحساب الرئيسي (اختياري)</label>
-  <textarea name="acc_reply" class="form-control" rows="4"
+  <textarea name="acc_reply" id="e2aReply" class="form-control" rows="4"
    placeholder="تم استلام رسالتك، شكرًا {name}."></textarea>
-  <div class="form-text">لو سِبته فاضي، الموظف يبعت بس من غير رد. ويُضاف توقيع الحساب تلقائيًا.</div></div>
+  <div class="form-text">بيتعبّى تلقائيًا من رد القالب لو موجود — وتقدر تعدّله. لو سِبته فاضي
+   الموظف يبعت بس من غير رد. ويُضاف توقيع الحساب تلقائيًا.
+   المتغيرات: <code>{name}</code> <code>{first_name}</code> <code>{title}</code>
+   <code>{department}</code> <code>{email}</code>.</div></div>
  <div class="row">
-  <div class="col-6 col-md-4 mb-2"><label class="small">
-    <i class="bi bi-stopwatch"></i> توزيع الإرسال خلال (ثانية)</label>
-   <input name="spread_seconds" type="number" min="0" class="form-control"
-          value="{{ spread_default }}"></div>
-  <div class="col-6 col-md-4 mb-2"><label class="small">
-    <i class="bi bi-hourglass-split"></i> تأخير رد الحساب (ثانية)</label>
-   <input name="reply_delay" type="number" min="0" class="form-control"
-          value="{{ reply_default }}"></div>
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-calendar-event text-danger"></i> تاريخ الإرسال</label>
+   <input name="send_date" type="date" class="form-control" value="{{ today }}" required></div>
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-clock"></i> ساعة الإرسال</label>
+   <input name="send_time" id="e2aSendTime" type="time" class="form-control"
+          value="12:00" required></div>
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-reply-fill text-success"></i> تاريخ الرد</label>
+   <input name="reply_date" type="date" class="form-control" value="{{ today }}" required></div>
+  <div class="col-6 col-md-3 mb-2"><label class="small">
+    <i class="bi bi-clock-history"></i> ساعة الرد</label>
+   <input name="reply_time" id="e2aReplyTime" type="time" class="form-control"
+          value="12:00" required></div>
  </div>
  <div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle text-primary"></i>
-  الموظفون يبعتوا موزّعين خلال المدة المحددة، وبعدها الحساب الرئيسي يرد على كل واحد.
-  تقدر تشوف الرسائل في <a href="{{ url_for('accounts') }}">الحسابات المرسِلة</a>
+  الرسائل تتسجّل بالتاريخ والوقت اللي تحددهم (رسالة الموظف بوقت الإرسال، ورد الحساب بوقت الرد).
+  تقدر تشوفهم في <a href="{{ url_for('accounts') }}">الحسابات المرسِلة</a>
   و<a href="{{ url_for('employees') }}">الموظفين</a> (مُرسَلة/مُستقبَلة) أو من البريد.</div>
  <div class="d-flex gap-2">
   <button class="btn btn-primary btn-lg"><i class="bi bi-send-check"></i> ابدأ الإرسال</button>
  </div>
 </form>
+<script>
+(function(){
+ // الساعات على الآن (توقيت السعودية)
+ try{
+  var now=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Riyadh'}));
+  var hh=('0'+now.getHours()).slice(-2), mm=('0'+now.getMinutes()).slice(-2);
+  var s=document.getElementById('e2aSendTime'), r=document.getElementById('e2aReplyTime');
+  if(s) s.value=hh+':'+mm; if(r) r.value=hh+':'+mm;
+ }catch(e){}
+ // لما تختار قالب: يتعبّى الموضوع (اسم القالب) ورد الحساب (رد القالب) لو فاضيين
+ var tpl=document.getElementById('e2aTemplate');
+ var subj=document.getElementById('e2aSubject');
+ var rep=document.getElementById('e2aReply');
+ function apply(){
+  var o=tpl.options[tpl.selectedIndex]; if(!o) return;
+  var nm=o.getAttribute('data-name')||'', rp=o.getAttribute('data-reply')||'';
+  if(subj && !subj.value.trim()) subj.value=nm;
+  if(rep && !rep.value.trim()) rep.value=rp;
+ }
+ if(tpl){ tpl.addEventListener('change', apply); apply(); }
+})();
+</script>
+{% endif %}
 {% endblock %}
 """
 
@@ -9441,9 +9482,10 @@ def quick_send():
 
 
 # --------------------------------------------- المراسلة العكسية: الموظف ← الحساب الرئيسي
-def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, spread_total, reply_delay):
-    """الموظف يبعت للحساب الرئيسي، وبعد تأخير الحساب الرئيسي يرد عليه — تسليم داخلي.
-    تُشغَّل في خيط خلفي عشان الإرسال يتوزّع والرد يتأخّر من غير ما يعلّق الواجهة."""
+def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, send_dt, reply_dt):
+    """الموظف يبعت للحساب الرئيسي، وبعد كده الحساب الرئيسي يرد عليه — تسليم داخلي.
+    send_dt/reply_dt = تاريخ ووقت الإرسال/الرد (يُختَم بيهم على الرسائل، زي الحملات).
+    تُشغَّل في خيط خلفي عشان ما تعلّقش الواجهة مع أعداد كبيرة."""
     conn = get_connection()
     sig_style = get_setting("signature_style", "rich")
     try:
@@ -9461,10 +9503,9 @@ def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, spread_total, repl
         if not rows:
             log.info("emp->acc: لا يوجد موظفون داخليون صالحون")
             return
-        gap = (spread_total / len(rows)) if (spread_total > 0 and len(rows) > 1) else 0
         subj = subject or "رسالة من الموظف"
         sent = []
-        for i, r in enumerate(rows):
+        for r in rows:
             emp = {"name": r["name"], "email": r["email"], "title": r["title"],
                    "department": r["department"], "phone": r["phone"],
                    "signature": r["signature"], "logo": r["logo"],
@@ -9478,18 +9519,14 @@ def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, spread_total, repl
                 body = (content + ("\n\n" + sig_text if sig_text else "")).strip()
                 html = _signature_html(body, _effective_logo(sig_logo))
             ok, mid = internal_deliver(r["email"], r["name"] or "", r["acc_email"],
-                                       subj, html, conn=conn)
+                                       subj, html, conn=conn, date_override=send_dt)
             conn.commit()
             if ok:
                 sent.append((r, mid))
             log.info("emp->acc إرسال %s: %s → %s", "OK" if ok else "FAIL",
                      r["email"], r["acc_email"])
-            if i < len(rows) - 1 and gap > 0:
-                _stop_event.wait(gap)
-        # ردود الحسابات الرئيسية (لو فيه نص رد) بعد التأخير
+        # ردود الحسابات الرئيسية (لو فيه نص رد) — تُختَم بتاريخ/وقت الرد
         if sent and (acc_reply or "").strip():
-            if reply_delay > 0:
-                _stop_event.wait(reply_delay)
             rsubj = subj if subj.lower().startswith("re:") else "Re: " + subj
             for r, mid in sent:
                 emp = {"name": r["name"], "email": r["email"], "title": r["title"],
@@ -9510,7 +9547,8 @@ def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, spread_total, repl
                 conn.execute("UPDATE mail_messages SET is_replied=1 WHERE msg_id=? AND folder='inbox'",
                              (mid,))
                 ok2, rmid = internal_deliver(r["acc_email"], r["acc_name"] or "", r["email"],
-                                             rsubj, rhtml, in_reply_to=in_reply_to, conn=conn)
+                                             rsubj, rhtml, in_reply_to=in_reply_to, conn=conn,
+                                             date_override=reply_dt)
                 # عزل عن نظام الرد العكسي العادي: رد الحساب بينزل في صندوق وارد الموظف
                 # جايّ من الحساب — لازم نعلّمه مردود عليه عشان محرّك العكسي ما يرصدهوش
                 # ويخلّي الموظف يرد عليه تاني (ده اللي كان ممكن يلغبط النظامين).
@@ -9530,8 +9568,11 @@ def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, spread_total, repl
 
 @app.route("/emp-to-account")
 def emp_to_account():
-    """شاشة: الموظفون يرسلون للحساب الرئيسي، والحساب الرئيسي يرد عليهم."""
+    """شاشة: الموظفون يرسلون للحساب الرئيسي، والحساب الرئيسي يرد عليهم.
+    زي نظام القوالب: تختار قالب رسالة الموظف + تاريخ ووقت للإرسال وللرد."""
     conn = get_connection()
+    templates = conn.execute(
+        "SELECT id, name, body, reply_body FROM templates ORDER BY name").fetchall()
     accs = conn.execute(
         "SELECT id, email, display_name, "
         "(SELECT COUNT(*) FROM employees e WHERE e.owner_account_id=accounts.id "
@@ -9543,31 +9584,48 @@ def emp_to_account():
         "SELECT COUNT(*) c FROM employees WHERE active=1 "
         "AND owner_account_id IS NOT NULL").fetchone()["c"]
     conn.close()
-    return render("emp2acc.html", "الموظف يرسل للحساب", accs=accs, depts=depts,
-                  total_emp=total_emp, spread_default=_gi("campaign_spread_seconds", 60),
-                  reply_default=_gi("reverse_delay_seconds", 20))
+    today = datetime.now().strftime("%Y-%m-%d")
+    return render("emp2acc.html", "الموظف يرسل للحساب", templates=templates, accs=accs,
+                  depts=depts, total_emp=total_emp, today=today)
 
 
 @app.route("/emp-to-account/send", methods=["POST"])
 def emp_to_account_send():
     f = request.form
+    template_id = (f.get("template_id") or "").strip()
     subject = (f.get("subject", "") or "").strip()
-    emp_msg = f.get("emp_msg", "")
     acc_reply = f.get("acc_reply", "")
-    if not emp_msg.strip():
-        flash("اكتب نص رسالة الموظف أولاً", "error")
+    send_date = (f.get("send_date", "") or "").strip()
+    send_time = (f.get("send_time", "") or "12:00").strip() or "12:00"
+    reply_date = (f.get("reply_date", "") or "").strip()
+    reply_time = (f.get("reply_time", "") or "12:00").strip() or "12:00"
+    conn = get_connection()
+    tpl = (conn.execute("SELECT id, name, body, reply_body FROM templates WHERE id=?",
+                        (int(template_id),)).fetchone() if template_id.isdigit() else None)
+    if not tpl:
+        conn.close()
+        flash("اختر قالب رسالة الموظف أولاً", "error")
         return redirect(url_for("emp_to_account"))
-    try:
-        spread_total = max(0, int(f.get("spread_seconds", "60")))
-    except ValueError:
-        spread_total = 60
-    try:
-        reply_delay = max(0, int(f.get("reply_delay", "20")))
-    except ValueError:
-        reply_delay = 20
+    if not send_date or not reply_date:
+        conn.close()
+        flash("حدّد تاريخ الإرسال وتاريخ الرد", "error")
+        return redirect(url_for("emp_to_account"))
+    emp_msg = tpl["body"] or ""
+    subj = subject or tpl["name"]
+    # لو مربع الرد فاضي ناخد رد القالب نفسه (نظام القوالب)
+    if not (acc_reply or "").strip():
+        acc_reply = tpl["reply_body"] or ""
+
+    def _dt(d, t):
+        try:
+            return datetime.fromisoformat(d + "T" + t)
+        except ValueError:
+            return None
+    send_dt = _dt(send_date, send_time)
+    reply_dt = _dt(reply_date, reply_time)
+
     scope_acc = (f.get("scope_account") or "").strip()
     dept = (f.get("department") or "").strip()
-    conn = get_connection()
     where, params = ["e.active=1", "e.owner_account_id IS NOT NULL"], []
     if scope_acc.isdigit():
         where.append("e.owner_account_id=?")
@@ -9582,11 +9640,11 @@ def emp_to_account_send():
         flash("لا يوجد موظفون مطابقون للاختيار", "error")
         return redirect(url_for("emp_to_account"))
     threading.Thread(target=_emp_to_account_run,
-                     args=(emp_ids, subject, emp_msg, acc_reply, spread_total, reply_delay),
+                     args=(emp_ids, subj, emp_msg, acc_reply, send_dt, reply_dt),
                      daemon=True).start()
     has_reply = bool((acc_reply or "").strip())
-    msg = "بدأ الإرسال: %d موظف هيبعتوا للحساب الرئيسي" % len(emp_ids)
-    msg += (" والحساب هيرد عليهم خلال ~%d ثانية." % reply_delay) if has_reply else " (بدون رد)."
+    msg = "بدأ الإرسال: %d موظف هيبعتوا للحساب الرئيسي بتاريخ %s" % (len(emp_ids), send_date)
+    msg += (" والحساب هيرد عليهم بتاريخ %s." % reply_date) if has_reply else " (بدون رد)."
     msg += " تابع في البريد أو في الحسابات المرسِلة."
     flash(msg, "success")
     return redirect(url_for("emp_to_account"))
