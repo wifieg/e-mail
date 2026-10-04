@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.18"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.19"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3368,8 +3368,7 @@ BASE_TPL = """
    <a class="{{ 'active' if ep in ('campaigns','campaign_detail') }}" href="{{ url_for('campaigns') }}"><i class="bi bi-megaphone-fill"></i> الحملات</a>
    <a class="{{ 'active' if ep=='schedule_page' }}" href="{{ url_for('schedule_page') }}"><i class="bi bi-shield-fill-check"></i> الجدولة والحماية</a>
    <div class="grp">الرسائل والردود</div>
-   <a class="nav-hl {{ 'active' if ep=='message_templates_page' }}" href="{{ url_for('message_templates_page') }}"><i class="bi bi-file-earmark-text-fill"></i> قوالب الرسائل المرسلة</a>
-   <a class="nav-hl {{ 'active' if ep=='reverse_page' }}" href="{{ url_for('reverse_page') }}"><i class="bi bi-robot"></i> الردود التلقائية</a>
+   <a class="nav-hl {{ 'active' if ep in ('message_templates_page','reverse_page') }}" href="{{ url_for('message_templates_page') }}"><i class="bi bi-file-earmark-text-fill"></i> القوالب والردود التلقائية</a>
    <div class="grp">البريد</div>
    <a class="{{ 'active' if ep in ('mail_home','mail_view','mail_message_view','mail_compose') }}" href="{{ url_for('mail_home') }}"><i class="bi bi-envelope-open"></i> البريد (سيرفر خارجي)</a>
    <div class="grp">النظام</div>
@@ -4384,6 +4383,9 @@ MSG_TEMPLATES_TPL = """
   <div class="modal-footer"><button class="btn btn-primary">حفظ</button></div>
  </form>
 </div></div></div>
+
+<hr class="my-4" id="reverse">
+{% include "reverse.html" %}
 {% endblock %}
 """
 
@@ -4830,7 +4832,6 @@ AUTOREPLY_TPL = """
 """
 
 REVERSE_TPL = """
-{% extends "base.html" %}{% block content %}
 <style>
  .rv-wrap{max-width:1100px;margin:0 auto}
  .rv-head{display:flex;align-items:center;gap:10px;margin-bottom:2px}
@@ -4908,7 +4909,7 @@ REVERSE_TPL = """
    <h6>ردود فشلت</h6><div class="n">{{ stats.failed }}</div></div>
  </div>
 
- <form method="POST">
+ <form method="POST" action="{{ url_for('reverse_page') }}">
   <div class="rv-card">
    <div class="rv-card-h"><i class="bi bi-clock-history"></i> التوقيت والتشغيل</div>
    <div class="rv-card-b">
@@ -5066,7 +5067,6 @@ function rvEmpFilter(){
  });
 }
 </script>
-{% endblock %}
 """
 
 LOGIN_TPL = """
@@ -8812,8 +8812,9 @@ def save_employee_signature(eid):
 def message_templates_page():
     conn = get_connection()
     rows = conn.execute("SELECT * FROM templates ORDER BY id DESC").fetchall()
+    rctx = _reverse_ctx(conn)
     conn.close()
-    return render("msg_templates.html", "قوالب الرسائل المرسلة", rows=rows)
+    return render("msg_templates.html", "القوالب والردود التلقائية", rows=rows, **rctx)
 
 
 @app.route("/templates/signature", methods=["POST"])
@@ -9244,6 +9245,41 @@ _REVERSE_KEYS = ["emp_imap_server", "emp_imap_port", "emp_smtp_server", "emp_smt
                  "reverse_delay_minutes", "reverse_delay_seconds", "reverse_scan_minutes"]
 
 
+def _reverse_ctx(conn):
+    """يجمع متغيّرات قالب الرد العكسي (للعرض داخل صفحة القوالب الموحّدة)."""
+    departments = [r["department"] for r in conn.execute(
+        "SELECT DISTINCT department FROM employees ORDER BY department").fetchall()]
+    dept_map = {r["department"]: r["body"]
+                for r in conn.execute("SELECT department, body FROM dept_replies").fetchall()}
+    accs = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
+    acc_replies = {r["account_id"]: dict(r) for r in
+                   conn.execute("SELECT * FROM account_replies").fetchall()}
+    queue = conn.execute("""SELECT q.*, e.name, e.email AS emp_email FROM reverse_queue q
+                            JOIN employees e ON e.id=q.employee_id
+                            WHERE q.status='pending' ORDER BY q.due_at ASC LIMIT 40""").fetchall()
+    emps = conn.execute("""SELECT e.id, e.name, e.email, e.department, e.emp_connected,
+                                  (e.password != '') AS has_pw, e.owner_account_id,
+                                  (SELECT COUNT(*) FROM emp_replies er
+                                     WHERE er.employee_id=e.id AND er.status='sent') AS n_replies
+                           FROM employees e WHERE e.active=1
+                           ORDER BY e.email""").fetchall()
+    stats = {
+        "total": conn.execute("SELECT COUNT(*) c FROM employees").fetchone()["c"],
+        "waiting": conn.execute("SELECT COUNT(*) c FROM reverse_queue "
+                                "WHERE status='pending'").fetchone()["c"],
+        "with_creds": conn.execute("SELECT COUNT(*) c FROM employees "
+                                   "WHERE password != ''").fetchone()["c"],
+        "sent": conn.execute("SELECT COUNT(*) c FROM emp_replies "
+                             "WHERE status='sent'").fetchone()["c"],
+        "failed": conn.execute("SELECT COUNT(*) c FROM emp_replies "
+                               "WHERE status='failed'").fetchone()["c"],
+    }
+    return {"s": {k: get_setting(k, "") for k in _REVERSE_KEYS},
+            "departments": departments, "dept_map": dept_map, "stats": stats,
+            "accs": accs, "acc_replies": acc_replies, "queue": queue, "emps": emps,
+            "delay_default": REVERSE_DELAY_DEFAULT, "scan_default": REVERSE_SCAN_DEFAULT}
+
+
 @app.route("/reverse", methods=["GET", "POST"])
 def reverse_page():
     conn = get_connection()
@@ -9288,38 +9324,11 @@ def reverse_page():
         conn.commit()
         conn.close()
         flash("تم حفظ إعدادات الرد العكسي", "success")
-        return redirect(url_for("reverse_page"))
+        return redirect(url_for("message_templates_page") + "#reverse")
 
-    departments = [r["department"] for r in conn.execute(
-        "SELECT DISTINCT department FROM employees ORDER BY department").fetchall()]
-    dept_map = {r["department"]: r["body"]
-                for r in conn.execute("SELECT department, body FROM dept_replies").fetchall()}
-    accs = conn.execute("SELECT * FROM accounts ORDER BY id").fetchall()
-    acc_replies = {r["account_id"]: dict(r) for r in
-                   conn.execute("SELECT * FROM account_replies").fetchall()}
-    queue = conn.execute("""SELECT q.*, e.name, e.email AS emp_email FROM reverse_queue q
-                            JOIN employees e ON e.id=q.employee_id
-                            WHERE q.status='pending' ORDER BY q.due_at ASC LIMIT 40""").fetchall()
-    emps = conn.execute("""SELECT e.id, e.name, e.email, e.department, e.emp_connected,
-                                  (e.password != '') AS has_pw, e.owner_account_id,
-                                  (SELECT COUNT(*) FROM emp_replies er
-                                     WHERE er.employee_id=e.id AND er.status='sent') AS n_replies
-                           FROM employees e WHERE e.active=1
-                           ORDER BY e.email""").fetchall()
-    stats = {
-        "total": conn.execute("SELECT COUNT(*) c FROM employees").fetchone()["c"],
-        "waiting": conn.execute("SELECT COUNT(*) c FROM reverse_queue "
-                                "WHERE status='pending'").fetchone()["c"],
-        "with_creds": conn.execute("SELECT COUNT(*) c FROM employees WHERE password != ''").fetchone()["c"],
-        "sent": conn.execute("SELECT COUNT(*) c FROM emp_replies WHERE status='sent'").fetchone()["c"],
-        "failed": conn.execute("SELECT COUNT(*) c FROM emp_replies WHERE status='failed'").fetchone()["c"],
-    }
+    # الصفحة اتدمجت مع «القوالب» — أي فتح مباشر يوجّه للشاشة الموحّدة
     conn.close()
-    s = {k: get_setting(k, "") for k in _REVERSE_KEYS}
-    return render("reverse.html", "الردود التلقائية", s=s, departments=departments,
-                  dept_map=dept_map, stats=stats, accs=accs, acc_replies=acc_replies,
-                  queue=queue, emps=emps,
-                  delay_default=REVERSE_DELAY_DEFAULT, scan_default=REVERSE_SCAN_DEFAULT)
+    return redirect(url_for("message_templates_page") + "#reverse")
 
 
 @app.route("/reverse/run")
@@ -9335,14 +9344,14 @@ def reverse_run():
         _safe(scan_reverse_inboxes)
     threading.Thread(target=_run_both, daemon=True).start()
     flash("بدأ فحص صناديق الموظفين في الخلفية — الردود ستُرسل في مواعيدها", "info")
-    return redirect(url_for("reverse_page"))
+    return redirect(url_for("message_templates_page") + "#reverse")
 
 
 @app.route("/reverse/flush")
 def reverse_flush():
     threading.Thread(target=lambda: _safe(flush_reverse_queue), daemon=True).start()
     flash("جارٍ إرسال الردود المستحقّة الآن", "info")
-    return redirect(url_for("reverse_page"))
+    return redirect(url_for("message_templates_page") + "#reverse")
 
 
 def _safe(fn):
