@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.24"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.25"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -5209,13 +5209,14 @@ LOGIN_TPL = """
    <img src="https://solutionstech.sa/storage/logo/22-removebg-preview.png" alt="Solutions Tech"
         onerror="this.outerHTML='<span style=&quot;font-size:1.6rem;font-weight:800;color:#14176C&quot;>SOLUTIONS <span style=&quot;color:#FCB938&quot;>TECH</span></span>'">
   </div>
-  <h1 class="lg-title">حلول الموارد البشرية<br>وتأجير العمالة</h1>
-  <p class="lg-sub">منصّة متكاملة لإدارة بريد الموظفين والحملات والردود — مصمّمة لتناسب
-   أعمالكم في تأجير العمالة والموارد البشرية بنظام أجير.</p>
+  <h1 class="lg-title">شريكك في<br>إدارة القوى العاملة</h1>
+  <p class="lg-sub">نوفّر ونُدير الكوادر نيابةً عنك — من التوظيف والعقود إلى الرواتب
+   والإقامات، بالتزام نظامي كامل ودون التأثير على نطاق منشأتك.</p>
   <ul class="lg-feats">
-   <li><i class="bi bi-people-fill"></i> إدارة الموظفين وصناديق بريدهم باحترافية</li>
-   <li><i class="bi bi-shield-lock-fill"></i> حماية وأرشفة آمنة للبيانات ونسخ احتياطي</li>
-   <li><i class="bi bi-graph-up-arrow"></i> متابعة لحظية للإرسال والاستقبال</li>
+   <li><i class="bi bi-people-fill"></i> كوادر متخصصة لكل القطاعات: مصانع · صحة · تجزئة · لوجستيات · نفط وغاز</li>
+   <li><i class="bi bi-globe2"></i> استقدام خارجي وتوظيف من داخل المملكة وتوفير عمالة فوري</li>
+   <li><i class="bi bi-arrow-left-right"></i> تحويل الكفالة وإسناد الموارد البشرية</li>
+   <li><i class="bi bi-patch-check-fill"></i> تكامل نظامي: مدد · التأمينات · مقيم · قوى · أجير</li>
   </ul>
   <div class="lg-contact">
    <span><i class="bi bi-telephone-fill"></i> 920015704</span>
