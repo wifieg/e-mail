@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.28"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.29"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -2391,6 +2391,14 @@ def _process_batch_inner(limit):
     internal_gap = (spread_total / len(rows)) if (all_internal and len(rows) > 0) else 0
 
     for idx, row in enumerate(rows):
+        # احترام الإيقاف/الإلغاء أثناء الإرسال: لو الحملة اتوقفت أو اتحذفت → سيب الباقي
+        if _stop_event.is_set():
+            stop_reason = "تم إيقاف الإرسال"
+            break
+        _cs = cur.execute("SELECT status FROM campaigns WHERE id=?",
+                          (row["campaign_id"],)).fetchone()
+        if not _cs or _cs[0] != "active":
+            continue   # الحملة دي اتوقفت/اتحذفت — ما نكملش إرسالها
         # اختر حساباً لم يتجاوز حدّه الساعي/اليومي
         available = []
         for a in accounts:
@@ -2425,6 +2433,16 @@ def _process_batch_inner(limit):
         subject = _fill_placeholders(row["subject"] or "", emp)
 
         acc_internal = ("internal" in account.keys() and account["internal"])
+        # قاعدة صارمة: ما نكررش نفس رسالة الحملة لنفس الموظف مهما حصل
+        if acc_internal and row["campaign_id"] and cur.execute(
+                "SELECT 1 FROM mail_messages WHERE box_email=? AND folder='inbox' AND campaign_id=?",
+                (row["email"].lower(), row["campaign_id"])).fetchone():
+            cur.execute("UPDATE campaign_recipients SET status='sent', attempts=attempts+1, "
+                        "sent_at=? WHERE id=?",
+                        (datetime.now().isoformat(timespec="seconds"), row["rid"]))
+            conn.commit()
+            touched.add(row["campaign_id"])
+            continue
         if acc_internal:
             # المحتوى مشخصن للمستقبِل + توقيع ولوجو الحساب الرئيسي المرسِل
             content = _fill_placeholders(row["body"] or "", emp)
@@ -7101,6 +7119,17 @@ BACKUPS_TPL = """
     <button class="btn btn-danger btn-sm"><i class="bi bi-trash3"></i> مسح الرسائل الآن</button>
    </div>
   </form>
+  <hr>
+  <div class="small text-muted mb-2"><b>تنظيف التكرار:</b> يُبقي <b>رسالة واحدة ورد واحد
+   لكل موظف</b> لكل حملة، ويحذف المكرر فقط (من غير ما يمسح الباقي). مفيد لو ظهرت أرقام زيادة.</div>
+  <form method="post" action="{{ url_for('dedup_mail_data') }}"
+        onsubmit="return confirm('إزالة الرسائل/الردود المكررة والإبقاء على واحدة لكل موظف؟ (فيه نسخة أمان).');">
+   <div class="d-flex gap-2 align-items-center flex-wrap">
+    <input name="confirm" class="form-control form-control-sm" style="max-width:220px"
+       placeholder="اكتب: تنظيف" autocomplete="off" required>
+    <button class="btn btn-warning btn-sm"><i class="bi bi-magic"></i> إزالة التكرار الآن</button>
+   </div>
+  </form>
  </div>
 </div>
 <script>
@@ -8012,6 +8041,49 @@ def reset_mail_data():
     extra = " · وأُعيد ضبط الحملات للإرسال من جديد" if reset_camps else ""
     flash("تم مسح الرسائل للبدء من جديد: %d رسالة (وارد/صادر) · %d سجل إرسال · %d رد%s "
           "(أُخذت نسخة أمان قبل المسح)" % (n_msgs, n_sent, n_rep, extra), "success")
+    return redirect(url_for("backups_page"))
+
+
+@app.route("/backups/dedup-mail", methods=["POST"])
+def dedup_mail_data():
+    """إزالة التكرار: الإبقاء على رسالة حملة واحدة لكل موظف + رد واحد، وحذف الباقي."""
+    if (request.form.get("confirm", "") or "").strip() != "تنظيف":
+        flash("لم يتم التنظيف — اكتب كلمة التأكيد «تنظيف» بالضبط.", "error")
+        return redirect(url_for("backups_page"))
+    try:
+        create_backup()
+    except Exception:  # noqa: BLE001
+        log.exception("safety backup before dedup failed")
+    conn = get_connection()
+    cur = conn.cursor()
+    removed = 0
+
+    def _run(sql):
+        nonlocal removed
+        try:
+            cur.execute(sql)
+            removed += cur.rowcount if (cur.rowcount and cur.rowcount > 0) else 0
+        except Exception:  # noqa: BLE001
+            log.exception("dedup: %s", sql)
+    # 1) رسائل الحملات: رسالة واحدة لكل (صندوق، مجلد، حملة)
+    _run("""DELETE FROM mail_messages WHERE campaign_id IS NOT NULL AND id NOT IN (
+              SELECT MIN(id) FROM mail_messages WHERE campaign_id IS NOT NULL
+              GROUP BY box_email, folder, campaign_id)""")
+    # 2) الردود (وبقية الرسائل): رسالة واحدة لكل (صندوق، مجلد، معرّف الرد) لما يكون فيه in_reply_to
+    _run("""DELETE FROM mail_messages WHERE in_reply_to IS NOT NULL AND in_reply_to<>'' AND id NOT IN (
+              SELECT MIN(id) FROM mail_messages WHERE in_reply_to IS NOT NULL AND in_reply_to<>''
+              GROUP BY box_email, folder, in_reply_to)""")
+    # 3) سجل الردود العكسية: رد واحد لكل (موظف، معرّف الرسالة الأصلية)
+    _run("""DELETE FROM emp_replies WHERE id NOT IN (
+              SELECT MIN(id) FROM emp_replies GROUP BY employee_id, in_reply_to)""")
+    # 4) سجل الإرسال: سطر واحد لكل (حملة، موظف)
+    _run("""DELETE FROM sent_emails WHERE campaign_id IS NOT NULL AND id NOT IN (
+              SELECT MIN(id) FROM sent_emails WHERE campaign_id IS NOT NULL
+              GROUP BY campaign_id, employee_id)""")
+    conn.commit()
+    conn.close()
+    flash("تم التنظيف: حُذفت الرسائل/الردود المكررة (أُبقيت رسالة ورد واحد لكل موظف). "
+          "أُخذت نسخة أمان قبل التنظيف.", "success")
     return redirect(url_for("backups_page"))
 
 
