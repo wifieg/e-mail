@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.29"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.30"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3676,6 +3676,11 @@ ACCOUNTS_TPL = """
  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add">
   <i class="bi bi-plus-lg"></i> إضافة إيميل مرسِل</button>
 </div>
+<div class="d-flex align-items-center gap-2 mb-1">
+ <span class="small text-muted"><i class="bi bi-arrow-repeat"></i> تحديث تلقائي كل ٥ ثوانٍ</span>
+ <span class="small text-success" id="accLiveFlag"></span>
+</div>
+<div id="accLive">
 <div class="table-wrap">
 <table class="table align-middle">
  <thead><tr><th>البريد</th><th>الاسم الظاهر</th><th>الاتصال</th><th>SMTP</th><th>IMAP</th>
@@ -3718,6 +3723,29 @@ ACCOUNTS_TPL = """
  </tbody>
 </table>
 </div>
+</div>
+<script>
+// تحديث لحظي لجدول الحسابات (مُرسَلة/مُستقبَلة والعدّادات) بدون إعادة تحميل
+(function(){
+ var wrap=document.getElementById('accLive'); if(!wrap) return;
+ function tick(){
+  // ما نحدّثش والمستخدم فاتح نافذة (modal)
+  if(document.querySelector('.modal.show')) return;
+  fetch(location.pathname,{headers:{'X-Requested-With':'fetch'}})
+   .then(function(r){return r.text()})
+   .then(function(html){
+     var doc=new DOMParser().parseFromString(html,'text/html');
+     var fresh=doc.getElementById('accLive');
+     if(fresh && fresh.innerHTML!==wrap.innerHTML){
+       wrap.innerHTML=fresh.innerHTML;
+       var fl=document.getElementById('accLiveFlag');
+       if(fl){ fl.textContent='✓ تم التحديث'; setTimeout(function(){fl.textContent='';},1500); }
+     }
+   }).catch(function(){});
+ }
+ setInterval(tick,5000);
+})();
+</script>
 
 {% for a in rows %}
 <div class="modal fade" id="edacc{{ a.id }}" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
@@ -4525,12 +4553,27 @@ CAMPAIGNS_TPL = """
       <span class="badge bg-info">+{{ c.dept_count }} قسم</span>{% endif %}</td>
   <td><span class="badge bg-{{ {'active':'primary','paused':'secondary','completed':'success'}[c.status] }}">
       {{ {'active':'نشطة','paused':'متوقفة','completed':'مكتملة'}[c.status] }}</span></td>
-  <td style="min-width:170px">
-   <div class="progress" style="height:16px;border-radius:8px">
-    <div class="progress-bar bg-success" style="width:{{ c.pct_sent }}%">{{ c.sent }}</div>
-    <div class="progress-bar bg-danger" style="width:{{ c.pct_failed }}%">{{ c.failed }}</div>
+  <td style="min-width:210px">
+   <div class="d-flex align-items-center gap-2 mb-1">
+    <small style="min-width:46px" class="text-muted">إرسال</small>
+    <div class="progress flex-grow-1" style="height:14px;border-radius:8px">
+     <div class="progress-bar bg-success" style="width:{{ c.pct_sent }}%"></div>
+     <div class="progress-bar bg-danger" style="width:{{ c.pct_failed }}%"></div>
+    </div>
+    {% if c.send_done %}<span class="badge bg-success"><i class="bi bi-check-lg"></i> اكتمل</span>
+    {% elif c.sent or c.failed %}<span class="badge bg-primary">{{ c.pct_done }}%</span>
+    {% else %}<span class="badge bg-secondary">بانتظار</span>{% endif %}
    </div>
-   <small class="text-muted">{{ c.done }}/{{ c.total }}</small>
+   <div class="d-flex align-items-center gap-2">
+    <small style="min-width:46px" class="text-muted">استقبال</small>
+    <div class="progress flex-grow-1" style="height:14px;border-radius:8px">
+     <div class="progress-bar bg-info" style="width:{{ c.pct_reply }}%"></div>
+    </div>
+    {% if c.reply_done %}<span class="badge bg-success"><i class="bi bi-check-lg"></i> اكتمل</span>
+    {% elif c.replied %}<span class="badge bg-info text-dark">{{ c.pct_reply }}%</span>
+    {% else %}<span class="badge bg-secondary">—</span>{% endif %}
+   </div>
+   <small class="text-muted">إرسال {{ c.done }}/{{ c.total }} · ردود {{ c.replied }}/{{ c.total }}</small>
   </td>
   <td class="small text-nowrap">
    {% if c.send_date %}<i class="bi bi-calendar-event text-primary"></i> {{ c.send_date }} {{ c.send_time }}
@@ -9128,7 +9171,9 @@ def campaigns():
                (SELECT MAX(r.sent_at) FROM campaign_recipients r
                   WHERE r.campaign_id=c.id AND r.status='sent') AS last_sent,
                (SELECT MAX(er.replied_at) FROM emp_replies er WHERE er.employee_id IN
-                  (SELECT r.employee_id FROM campaign_recipients r WHERE r.campaign_id=c.id)) AS last_reply
+                  (SELECT r.employee_id FROM campaign_recipients r WHERE r.campaign_id=c.id)) AS last_reply,
+               (SELECT COUNT(*) FROM mail_messages mm
+                  WHERE mm.campaign_id=c.id AND mm.folder='inbox' AND mm.is_replied=1) AS replied
         FROM campaigns c JOIN templates t ON t.id=c.template_id
         ORDER BY c.id DESC
     """).fetchall()
@@ -9140,6 +9185,11 @@ def campaigns():
         d["done"] = d["sent"] + d["failed"]
         d["pct_sent"] = round(100 * d["sent"] / total, 1) if total else 0
         d["pct_failed"] = round(100 * d["failed"] / total, 1) if total else 0
+        d["replied"] = d.get("replied") or 0
+        d["send_done"] = total > 0 and d["done"] >= total
+        d["reply_done"] = total > 0 and d["replied"] >= total
+        d["pct_reply"] = round(100 * d["replied"] / total) if total else 0
+        d["pct_done"] = round(100 * d["done"] / total) if total else 0
         rows.append(d)
     conn2 = get_connection()
     accs = conn2.execute("SELECT id, email, display_name, "
