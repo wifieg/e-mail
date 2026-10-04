@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.36"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.37"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -9509,8 +9509,15 @@ def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, spread_total, repl
                 # نعلّم رسالة الموظف الواردة في صندوق الحساب كأنها تمّ الرد عليها
                 conn.execute("UPDATE mail_messages SET is_replied=1 WHERE msg_id=? AND folder='inbox'",
                              (mid,))
-                internal_deliver(r["acc_email"], r["acc_name"] or "", r["email"],
-                                 rsubj, rhtml, in_reply_to=in_reply_to, conn=conn)
+                ok2, rmid = internal_deliver(r["acc_email"], r["acc_name"] or "", r["email"],
+                                             rsubj, rhtml, in_reply_to=in_reply_to, conn=conn)
+                # عزل عن نظام الرد العكسي العادي: رد الحساب بينزل في صندوق وارد الموظف
+                # جايّ من الحساب — لازم نعلّمه مردود عليه عشان محرّك العكسي ما يرصدهوش
+                # ويخلّي الموظف يرد عليه تاني (ده اللي كان ممكن يلغبط النظامين).
+                if ok2 and rmid:
+                    conn.execute("UPDATE mail_messages SET is_replied=1 "
+                                 "WHERE msg_id=? AND lower(box_email)=? AND folder='inbox'",
+                                 (rmid, (r["email"] or "").lower()))
                 conn.commit()
             log.info("emp->acc: %d رسالة من الموظفين + %d رد من الحسابات", len(sent), len(sent))
         else:
