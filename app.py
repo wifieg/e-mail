@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.22"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.23"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -5110,11 +5110,32 @@ LOGIN_TPL = """
 <style>
  *{box-sizing:border-box}
  :root{--st-navy:#14176C;--st-gold:#FCB938}
- body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px;
-   font-family:'Cairo','Segoe UI',Tahoma,Arial,sans-serif;
-   background:radial-gradient(1200px 600px at 85% -10%, rgba(252,185,56,.14), transparent 60%),
-              radial-gradient(1000px 600px at 0% 110%, rgba(20,23,108,.14), transparent 55%),
-              linear-gradient(135deg,#f5f7fc 0%,#eef1f8 100%)}
+ body{margin:0;min-height:100vh;font-family:'Cairo','Segoe UI',Tahoma,Arial,sans-serif;
+   background:linear-gradient(135deg,#f5f7fc 0%,#eef1f8 100%)}
+ /* تخطيط نصفين: لوحة تعريفية + كارت الدخول */
+ .lg-wrap{display:flex;min-height:100vh}
+ .lg-brand{flex:1.08;position:relative;overflow:hidden;color:#fff;
+   background:linear-gradient(135deg,#14176C 0%,#20237f 55%,#0d0f46 100%);
+   display:flex;flex-direction:column;justify-content:center;padding:56px 64px;z-index:0}
+ .lg-brand::before{content:"";position:absolute;inset:0;z-index:-1;
+   background:url('https://solutionstech.sa/storage/7711-850x480.jpg') center/cover no-repeat;
+   opacity:.14}
+ .lg-brand::after{content:"";position:absolute;z-index:-1;width:520px;height:520px;border-radius:50%;
+   right:-180px;top:-160px;background:radial-gradient(circle,rgba(252,185,56,.30),transparent 68%)}
+ .lg-chip{display:inline-flex;background:#fff;border-radius:14px;padding:16px 22px;
+   box-shadow:0 12px 30px rgba(0,0,0,.22);align-self:flex-start;margin-bottom:34px}
+ .lg-chip img{height:54px;width:auto;display:block}
+ .lg-title{font-size:2.15rem;font-weight:800;line-height:1.3;margin:0 0 10px}
+ .lg-sub{font-size:1rem;color:#d6d8f5;margin:0 0 30px;max-width:460px;line-height:1.9}
+ .lg-feats{list-style:none;padding:0;margin:0 0 34px;display:grid;gap:13px;max-width:470px}
+ .lg-feats li{display:flex;align-items:center;gap:12px;font-size:1rem;color:#eef0ff}
+ .lg-feats i{color:#FCB938;font-size:1.15rem;flex:0 0 auto}
+ .lg-contact{display:flex;gap:22px;flex-wrap:wrap;font-size:.92rem;color:#c9ccf0;
+   border-top:1px solid rgba(255,255,255,.15);padding-top:20px}
+ .lg-contact span{display:inline-flex;align-items:center;gap:8px}
+ .lg-contact i{color:#FCB938}
+ .lg-login{flex:.92;display:flex;align-items:center;justify-content:center;padding:26px}
+ @media(max-width:900px){ .lg-brand{display:none} .lg-login{flex:1} }
  .ow-card{width:min(560px,94vw);min-height:560px;background:#fff;
    border:1px solid #e3e6f0;border-top:5px solid var(--st-gold);border-radius:16px;
    box-shadow:0 22px 60px rgba(20,23,108,.20);position:relative;overflow:hidden;
@@ -5182,6 +5203,27 @@ LOGIN_TPL = """
  .ow-goback{margin-top:18px;color:var(--st-navy);text-decoration:none;font-size:.95rem}
  .ow-goback:hover{text-decoration:underline}
 </style></head><body>
+<div class="lg-wrap">
+ <aside class="lg-brand">
+  <div class="lg-chip">
+   <img src="https://solutionstech.sa/storage/logo/22-removebg-preview.png" alt="Solutions Tech"
+        onerror="this.outerHTML='<span style=&quot;font-size:1.6rem;font-weight:800;color:#14176C&quot;>SOLUTIONS <span style=&quot;color:#FCB938&quot;>TECH</span></span>'">
+  </div>
+  <h1 class="lg-title">حلول الموارد البشرية<br>وتأجير العمالة</h1>
+  <p class="lg-sub">منصّة متكاملة لإدارة بريد الموظفين والحملات والردود — مصمّمة لتناسب
+   أعمالكم في تأجير العمالة والموارد البشرية بنظام أجير.</p>
+  <ul class="lg-feats">
+   <li><i class="bi bi-people-fill"></i> إدارة الموظفين وصناديق بريدهم باحترافية</li>
+   <li><i class="bi bi-megaphone-fill"></i> حملات بريد مجدولة وردود تلقائية منظّمة</li>
+   <li><i class="bi bi-shield-lock-fill"></i> حماية وأرشفة آمنة للبيانات ونسخ احتياطي</li>
+   <li><i class="bi bi-graph-up-arrow"></i> متابعة لحظية للإرسال والاستقبال</li>
+  </ul>
+  <div class="lg-contact">
+   <span><i class="bi bi-telephone-fill"></i> 920015704</span>
+   <span><i class="bi bi-globe"></i> solutionstech.sa</span>
+  </div>
+ </aside>
+ <main class="lg-login">
 <div class="ow-card">
  <button type="button" class="ow-close" onclick="history.length>1?history.back():null" title="إغلاق"><i class="bi bi-x-lg"></i></button>
  <div class="ow-brand">
@@ -5189,7 +5231,6 @@ LOGIN_TPL = """
        onerror="this.style.display='none';document.getElementById('owFallback').style.display='block'">
   <div class="fallback" id="owFallback">SOLUTIONS <span style="color:var(--st-gold)">TECH</span></div>
   <div class="rule"></div>
-  <div class="tag">نظام إدارة البريد</div>
  </div>
  <form method="POST" class="ow-body">
   {% with msgs = get_flashed_messages(with_categories=true) %}
@@ -5212,6 +5253,8 @@ LOGIN_TPL = """
    <button class="ow-btn" type="submit">اتصال</button>
   </div>
  </form>
+</div>
+ </main>
 </div>
 
 <!-- شاشة الإعداد المتقدم (زي Outlook) -->
