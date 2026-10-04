@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.19"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.20"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -2347,6 +2347,12 @@ def _process_batch_inner(limit):
         conn.close()
         return {"sent": 0, "failed": 0, "skipped": 0, "message": "لا توجد حسابات نشطة"}
 
+    # نظام داخلي بالكامل: التسليم فوري محلياً، فلا داعي لتقطيع الإرسال على دفعات
+    # متكرّرة — نرسل كل المستحق دفعة واحدة حتى تخلص الحملة فوراً ولا تتكرر.
+    all_internal = all((a["internal"] if "internal" in a.keys() else 0) for a in accounts)
+    if limit is None and all_internal:
+        batch_size = 1000000
+
     order = "RANDOM()" if cfg["randomize"] else "r.id"
     now_iso = datetime.now().isoformat(timespec="seconds")
     rows = cur.execute(f"""
@@ -2455,8 +2461,10 @@ def _process_batch_inner(limit):
         failed += (not ok)
         log.info("%s %s عبر %s", "OK " if ok else "FAIL", row["email"], account["email"])
 
-        # تأخير عشوائي قبل الرسالة التالية (يمكن مقاطعته عند الإيقاف)
-        if idx < len(rows) - 1 and cfg["max_delay"] > 0 and not _stop_event.is_set():
+        # تأخير عشوائي قبل الرسالة التالية (للحماية من البلوك على السيرفرات الخارجية فقط)
+        # التسليم الداخلي فوري ولا يحتاج تأخير — عشان الحملة تخلص مرة واحدة بدون تقطيع.
+        if (not acc_internal and idx < len(rows) - 1 and cfg["max_delay"] > 0
+                and not _stop_event.is_set()):
             lo, hi = sorted((cfg["min_delay"], cfg["max_delay"]))
             _stop_event.wait(random.uniform(lo, hi))
 
