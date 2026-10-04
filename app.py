@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.20"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.21"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -624,6 +624,7 @@ def init_db():
         "signature_template": DEFAULT_SIGNATURE_TPL,
         "send_min_delay": "8",           # ثوانٍ (أقل تأخير بين رسالتين)
         "send_max_delay": "25",          # ثوانٍ (أكبر تأخير بين رسالتين)
+        "campaign_spread_seconds": "60", # توزيع إرسال الحملة الداخلية على كام ثانية (0=لحظي)
         "per_account_hourly_limit": "0", # 0 = بلا حد
         "per_account_daily_limit": "0",  # 0 = بلا حد
         "randomize_send": "1",           # ترتيب عشوائي للمستلمين + اختيار حساب عشوائي
@@ -2385,6 +2386,10 @@ def _process_batch_inner(limit):
     stop_reason = ""
     by_id = {a["id"]: a for a in accounts}
 
+    # توزيع الإرسال الداخلي على مدة (افتراضي 60 ثانية): فجوة بين كل رسالة = المدة/العدد
+    spread_total = max(0, _gi("campaign_spread_seconds", 60))
+    internal_gap = (spread_total / len(rows)) if (all_internal and len(rows) > 0) else 0
+
     for idx, row in enumerate(rows):
         # اختر حساباً لم يتجاوز حدّه الساعي/اليومي
         available = []
@@ -2461,12 +2466,17 @@ def _process_batch_inner(limit):
         failed += (not ok)
         log.info("%s %s عبر %s", "OK " if ok else "FAIL", row["email"], account["email"])
 
-        # تأخير عشوائي قبل الرسالة التالية (للحماية من البلوك على السيرفرات الخارجية فقط)
-        # التسليم الداخلي فوري ولا يحتاج تأخير — عشان الحملة تخلص مرة واحدة بدون تقطيع.
-        if (not acc_internal and idx < len(rows) - 1 and cfg["max_delay"] > 0
-                and not _stop_event.is_set()):
-            lo, hi = sorted((cfg["min_delay"], cfg["max_delay"]))
-            _stop_event.wait(random.uniform(lo, hi))
+        # الفاصل قبل الرسالة التالية:
+        #  - داخلي: نوزّع كل الحملة على مدة spread (افتراضي 60 ثانية) فتخلص مرة واحدة
+        #    بشكل منتظم بدل اللحظي أو الدفعات المتباعدة.
+        #  - خارجي: تأخير عشوائي للحماية من البلوك.
+        if idx < len(rows) - 1 and not _stop_event.is_set():
+            if acc_internal:
+                if internal_gap > 0:
+                    _stop_event.wait(internal_gap)
+            elif cfg["max_delay"] > 0:
+                lo, hi = sorted((cfg["min_delay"], cfg["max_delay"]))
+                _stop_event.wait(random.uniform(lo, hi))
 
     # علّم الحملات المكتملة
     for cid in touched:
@@ -2978,11 +2988,18 @@ def scheduler_loop():
                        (cc.send_date || 'T' ||
                         CASE WHEN cc.send_time='' THEN '12:00' ELSE cc.send_time END) <= ?)
             """, (now_iso,)).fetchone()["c"]
+            # نظام داخلي بالكامل؟ ساعتها الحملة المستحقة تتبعت فوراً (مش تستنى الفترة)
+            all_internal_sched = bool(conn.execute(
+                "SELECT COUNT(*) c FROM accounts WHERE active=1").fetchone()["c"]) and not \
+                conn.execute("SELECT COUNT(*) c FROM accounts WHERE active=1 AND internal=0"
+                             ).fetchone()["c"]
             conn.close()
             if due_pending and not _batch_lock.locked():
                 interval = max(1, int(s["interval_minutes"])) if s else 1
                 due = True
-                if s and s["last_run"]:
+                if all_internal_sched:
+                    due = True   # داخلي: ابعت فوراً عند حلول الموعد (يتوزّع على مدة spread)
+                elif s and s["last_run"]:
                     try:
                         last = datetime.fromisoformat(s["last_run"])
                         due = datetime.now() >= last + timedelta(minutes=interval)
@@ -2995,7 +3012,8 @@ def scheduler_loop():
                     conn.commit()
                     conn.close()
                     log.info("تشغيل دفعة مجدولة (حملات حان موعدها)")
-                    process_batch()
+                    # في الخلفية: التوزيع على مدة (spread) ما يعطّلش حلقة المُجدوِل/الردود
+                    threading.Thread(target=_run_batch_bg, daemon=True).start()
             # الرد العكسي يعمل باستمرار: فحص دوري + إرسال ما حان موعده
             reverse_tick()
             # مراقبة ذاتية (كل ~60 ثانية) + نسخ احتياطي تلقائي
@@ -4773,6 +4791,10 @@ SCHEDULE_TPL = """
       <div class="sc-ig"><input name="per_account_daily_limit" type="number" min="0" value="{{ cfg.per_account_daily_limit }}">
        <span class="unit">/ يوم</span></div>
       <div class="sc-hint">0 = بلا حد</div></div>
+     <div class="sc-fld"><label>توزيع الحملة الداخلية على</label>
+      <div class="sc-ig"><input name="campaign_spread_seconds" type="number" min="0" value="{{ cfg.campaign_spread_seconds or '60' }}">
+       <span class="unit">ثانية</span></div>
+      <div class="sc-hint">الحملة الداخلية تتبعت كلها موزّعة على المدة دي (افتراضي 60 ثانية · 0 = لحظي). مرة واحدة ثم تخلص.</div></div>
     </div>
     <label class="sc-check">
      <input type="checkbox" name="randomize_send" {{ 'checked' if cfg.randomize_send == '1' }}>
@@ -9189,7 +9211,8 @@ def _run_batch_bg():
 
 # ------------------------------------------------------------------ الجدولة
 _SCHED_KEYS = ["send_min_delay", "send_max_delay", "per_account_hourly_limit",
-               "per_account_daily_limit", "randomize_send", "save_to_sent"]
+               "per_account_daily_limit", "randomize_send", "save_to_sent",
+               "campaign_spread_seconds"]
 
 
 @app.route("/schedule", methods=["GET", "POST"])
@@ -9205,7 +9228,8 @@ def schedule_page():
         conn.commit()
         conn.close()
         for k in ("send_min_delay", "send_max_delay",
-                  "per_account_hourly_limit", "per_account_daily_limit"):
+                  "per_account_hourly_limit", "per_account_daily_limit",
+                  "campaign_spread_seconds"):
             try:
                 set_setting(k, max(0, int(f.get(k, "0"))))
             except ValueError:
