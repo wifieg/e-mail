@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.25"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.26"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -5134,7 +5134,23 @@ LOGIN_TPL = """
    border-top:1px solid rgba(255,255,255,.15);padding-top:20px}
  .lg-contact span{display:inline-flex;align-items:center;gap:8px}
  .lg-contact i{color:#FCB938}
- .lg-login{flex:.92;display:flex;align-items:center;justify-content:center;padding:26px}
+ .lg-login{flex:.92;display:flex;flex-direction:column;align-items:center;justify-content:center;
+   padding:26px;position:relative;overflow:hidden}
+ /* خلفية مزخرفة بالهوية: تدرّج ناعم + علامة سهم ذهبي باهتة */
+ .lg-login::before{content:"";position:absolute;inset:0;z-index:0;pointer-events:none;
+   background:radial-gradient(520px 320px at 18% 12%, rgba(252,185,56,.13), transparent 60%),
+             radial-gradient(560px 360px at 92% 104%, rgba(20,23,108,.10), transparent 60%)}
+ .lg-login::after{content:"";position:absolute;z-index:0;width:340px;height:340px;left:-70px;bottom:-70px;
+   pointer-events:none;opacity:.06;transform:rotate(-8deg);background:no-repeat center/contain;
+   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cpath fill='%23FCB938' d='M8 18 L72 18 L50 44 L8 44 Z'/%3E%3Cpath fill='%23FCB938' d='M8 54 L62 54 L40 80 L8 80 Z'/%3E%3C/svg%3E")}
+ .lg-welcome{position:relative;z-index:1;text-align:center;margin-bottom:20px}
+ .lg-welcome h2{font-size:1.5rem;font-weight:800;color:var(--st-navy);margin:0 0 3px}
+ .lg-welcome p{font-size:.9rem;color:#6b7280;margin:0 0 10px}
+ .lg-clock{display:inline-flex;align-items:center;gap:8px;background:#fff;border:1px solid #e3e6f0;
+   border-radius:999px;padding:6px 15px;font-size:.84rem;color:var(--st-navy);font-weight:700;
+   box-shadow:0 4px 12px rgba(20,23,108,.10)}
+ .lg-clock i{color:var(--st-gold)}
+ .lg-login .ow-card{position:relative;z-index:1}
  @media(max-width:900px){ .lg-brand{display:none} .lg-login{flex:1} }
  .ow-card{width:min(560px,94vw);min-height:560px;background:#fff;
    border:1px solid #e3e6f0;border-top:5px solid var(--st-gold);border-radius:16px;
@@ -5213,7 +5229,7 @@ LOGIN_TPL = """
   <p class="lg-sub">نوفّر ونُدير الكوادر نيابةً عنك — من التوظيف والعقود إلى الرواتب
    والإقامات، بالتزام نظامي كامل ودون التأثير على نطاق منشأتك.</p>
   <ul class="lg-feats">
-   <li><i class="bi bi-people-fill"></i> كوادر متخصصة لكل القطاعات: مصانع · صحة · تجزئة · لوجستيات · نفط وغاز</li>
+   <li><i class="bi bi-people-fill"></i> كوادر متخصصة لكل القطاعات: تقنية المعلومات · مصانع · صحة · تجزئة · لوجستيات · نفط وغاز</li>
    <li><i class="bi bi-globe2"></i> استقدام خارجي وتوظيف من داخل المملكة وتوفير عمالة فوري</li>
    <li><i class="bi bi-arrow-left-right"></i> تحويل الكفالة وإسناد الموارد البشرية</li>
    <li><i class="bi bi-patch-check-fill"></i> تكامل نظامي: مدد · التأمينات · مقيم · قوى · أجير</li>
@@ -5224,6 +5240,11 @@ LOGIN_TPL = """
   </div>
  </aside>
  <main class="lg-login">
+ <div class="lg-welcome">
+  <h2>مرحباً بك 👋</h2>
+  <p>سجّل الدخول للمتابعة إلى لوحة التحكم</p>
+  <span class="lg-clock"><i class="bi bi-clock"></i> <span id="lgClock">—</span></span>
+ </div>
 <div class="ow-card">
  <button type="button" class="ow-close" onclick="history.length>1?history.back():null" title="إغلاق"><i class="bi bi-x-lg"></i></button>
  <div class="ow-brand">
@@ -5281,6 +5302,21 @@ LOGIN_TPL = """
  <a href="#" class="dots">•••</a>
 </div>
 <script>
+// ساعة وتاريخ حيّ بتوقيت السعودية
+(function(){
+ var el=document.getElementById('lgClock'); if(!el) return;
+ var days=['الأحد','الإثنين','الثلاثاء','الأربعاء','الخميس','الجمعة','السبت'];
+ function pad(n){return (n<10?'0':'')+n;}
+ function tick(){
+  try{
+   var now=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Riyadh'}));
+   var h=now.getHours(), m=now.getMinutes(), ampm=h<12?'ص':'م', h12=h%12||12;
+   el.textContent = days[now.getDay()]+' '+pad(now.getDate())+'/'+pad(now.getMonth()+1)+'/'
+     +now.getFullYear()+' · '+h12+':'+pad(m)+' '+ampm;
+  }catch(e){}
+ }
+ tick(); setInterval(tick, 30000);
+})();
 (function(){
  var u=document.querySelector('input[name=username]');
  var r=document.getElementById('owRemember');
