@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.31"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.32"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -6501,17 +6501,23 @@ DISTRIBUTION_TPL = """
  <div class="ds-card">
   <div class="ds-card-h"><i class="bi bi-magic"></i> توزيع تلقائي</div>
   <div class="ds-card-b">
-   <div class="d-flex gap-2 flex-wrap">
-    <form method="POST" action="{{ url_for('distribution_auto') }}">
-     <input type="hidden" name="mode" value="equal">
-     <button class="ds-btn"><i class="bi bi-distribute-horizontal"></i> بالتساوي على الحسابات النشطة</button>
-    </form>
-    <form method="POST" action="{{ url_for('distribution_auto') }}">
-     <input type="hidden" name="mode" value="department">
-     <button class="ds-btn-o"><i class="bi bi-diagram-3"></i> أقساماً كاملة (كل قسم لحساب واحد)</button>
-    </form>
-   </div>
-   <p class="small text-muted mt-2 mb-0">مثال: 250 موظفاً و5 حسابات → 50 موظفاً لكل حساب.</p>
+   <form method="POST" action="{{ url_for('distribution_auto') }}">
+    <div class="small text-muted mb-1">وزّع على الحسابات دي فقط — شيل علامة أي حساب عايز تستثنيه (زي INFO):</div>
+    <div class="d-flex gap-3 flex-wrap mb-2" style="gap:10px 18px">
+     {% for a in accs %}
+     <label class="small" style="cursor:pointer"><input type="checkbox" name="accounts" value="{{ a.id }}"
+        {{ 'checked' if a.active }} {{ 'disabled' if not a.active }}>
+       {{ a.display_name or a.email }}{{ ' (موقوف)' if not a.active }}</label>
+     {% endfor %}
+    </div>
+    <div class="d-flex gap-2 flex-wrap">
+     <button class="ds-btn" name="mode" value="equal">
+      <i class="bi bi-distribute-horizontal"></i> بالتساوي على المحدَّدين</button>
+     <button class="ds-btn-o" name="mode" value="department">
+      <i class="bi bi-diagram-3"></i> أقساماً كاملة على المحدَّدين</button>
+    </div>
+   </form>
+   <p class="small text-muted mt-2 mb-0">مثال: 214 موظفاً على 5 حسابات (باستثناء INFO) → ~43 لكل حساب.</p>
   </div>
  </div>
 
@@ -8907,14 +8913,17 @@ def distribution():
 def distribution_auto():
     """توزيع تلقائي: بالتساوي على الحسابات، أو أقساماً كاملة لكل حساب."""
     mode = request.form.get("mode", "equal")
+    sel = [int(x) for x in request.form.getlist("accounts") if x.isdigit()]
     conn = get_connection()
     cur = conn.cursor()
     accs = cur.execute("SELECT id FROM accounts WHERE active=1 ORDER BY id").fetchall()
-    if not accs:
-        conn.close()
-        flash("لا توجد حسابات نشطة للتوزيع عليها", "error")
-        return redirect(url_for("distribution"))
     acc_ids = [a["id"] for a in accs]
+    if sel:                       # اقصر التوزيع على الحسابات المختارة فقط
+        acc_ids = [i for i in acc_ids if i in sel]
+    if not acc_ids:
+        conn.close()
+        flash("اختر حساباً واحداً نشطاً على الأقل للتوزيع عليه", "error")
+        return redirect(url_for("distribution"))
 
     if mode == "department":
         # كل قسم كامل لحساب واحد، مع موازنة الأعداد (الأكبر أولاً)
