@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.43"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.44"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -487,6 +487,26 @@ def init_db():
             signature  TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- مرفقات القوالب: تُخزَّن مرة واحدة لكل قالب (رسالة/رد)، وتُربَط بالرسائل المُسلَّمة
+        CREATE TABLE IF NOT EXISTS tpl_attachments (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_kind TEXT NOT NULL DEFAULT 'camp',   -- camp | emp
+            template_id   INTEGER NOT NULL,
+            scope         TEXT NOT NULL DEFAULT 'msg',     -- msg (الرسالة) | reply (الرد)
+            filename      TEXT NOT NULL,
+            content_type  TEXT NOT NULL DEFAULT 'application/octet-stream',
+            data          TEXT NOT NULL,                   -- base64
+            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- ربط المرفقات بالرسائل المُسلَّمة (بدون تكرار البيانات) عبر msg_id
+        CREATE TABLE IF NOT EXISTS msg_attachments (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            msg_id     TEXT NOT NULL,
+            tpl_att_id INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         -- قوالب الاتجاه العكسي: الموظف يرسل للحساب الرئيسي (منفصلة عن قوالب الحملات)
@@ -1040,6 +1060,59 @@ def _logo_data_uri(file_storage):
     return _read_logo(file_storage)[0]
 
 
+ATTACH_MAX_BYTES = 8 * 1024 * 1024   # أقصى حجم للمرفق الواحد (8 ميجا)
+import mimetypes as _mimetypes
+
+
+def _read_upload(file_storage):
+    """يقرأ ملف مرفق مرفوع. يعيد (filename, content_type, base64, error).
+    error='' عند النجاح، و(None,...) لو مفيش ملف."""
+    if not file_storage or not file_storage.filename:
+        return None, None, None, ""
+    raw = file_storage.read()
+    if not raw:
+        return None, None, None, "ملف فارغ: " + file_storage.filename
+    if len(raw) > ATTACH_MAX_BYTES:
+        return None, None, None, ("«%s» حجمه %.1f ميجا — الأقصى %d ميجا"
+                                  % (file_storage.filename, len(raw) / 1048576.0,
+                                     ATTACH_MAX_BYTES // 1048576))
+    fn = os.path.basename(file_storage.filename)
+    ctype = (file_storage.mimetype
+             or _mimetypes.guess_type(fn)[0] or "application/octet-stream")
+    return fn, ctype, base64.b64encode(raw).decode("ascii"), ""
+
+
+def _tpl_att_ids(conn, template_kind, template_id, scope):
+    """معرّفات مرفقات قالب معيّن (نطاق msg/reply) لربطها بالرسائل المُسلَّمة."""
+    if not template_id:
+        return []
+    try:
+        return [r["id"] for r in conn.execute(
+            "SELECT id FROM tpl_attachments WHERE template_kind=? AND template_id=? AND scope=?",
+            (template_kind, template_id, scope)).fetchall()]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def _save_tpl_attachments(conn, template_kind, template_id, scope, files):
+    """يخزّن ملفات مرفوعة كمرفقات لقالب. يعيد (عدد_نجح, [أخطاء])."""
+    ok, errs = 0, []
+    for fs in files or []:
+        fn, ctype, b64, err = _read_upload(fs)
+        if err:
+            errs.append(err)
+            continue
+        if not fn:
+            continue
+        conn.execute(
+            """INSERT INTO tpl_attachments
+               (template_kind, template_id, scope, filename, content_type, data)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (template_kind, template_id, scope, fn, ctype, b64))
+        ok += 1
+    return ok, errs
+
+
 def _effective_logo(account_logo=""):
     """اللوجو الفعلي لأي توقيع: اللوجو الموحّد العام إن وُجد، وإلا لوجو الحساب."""
     return (get_setting("global_logo", "") or "").strip() or (account_logo or "")
@@ -1150,9 +1223,11 @@ def _rich_signature_html(entity, logo=""):
 
 
 def internal_deliver(from_email, from_name, to_email, subject, body_html,
-                     in_reply_to=None, conn=None, date_override=None, campaign_id=None):
+                     in_reply_to=None, conn=None, date_override=None, campaign_id=None,
+                     attachment_ids=None):
     """يسلّم رسالة داخلياً: نسخة inbox للمستقبِل + نسخة sent للمرسِل.
-    body_html = نص HTML جاهز (بالتوقيع). يعيد (نجاح, msg_id)."""
+    body_html = نص HTML جاهز (بالتوقيع). attachment_ids = قائمة معرّفات مرفقات
+    القالب تُربَط بالرسالة (تظهر وتتنزّل في البريد). يعيد (نجاح, msg_id)."""
     own = conn is None
     if own:
         conn = get_connection()
@@ -1174,6 +1249,10 @@ def internal_deliver(from_email, from_name, to_email, subject, body_html,
                VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (from_email.lower(), from_email.lower(), from_name or "", to_email.lower(),
              subject, body_html, msg_id, in_reply_to, now, campaign_id))
+        # اربط مرفقات القالب بالرسالة (نسخة واحدة تكفي للطرفين — مشتركة بالـ msg_id)
+        for aid in (attachment_ids or []):
+            conn.execute("INSERT INTO msg_attachments (msg_id, tpl_att_id) VALUES (?, ?)",
+                         (msg_id, aid))
         if own:
             conn.commit()
         return True, msg_id
@@ -2391,7 +2470,7 @@ def _process_batch_core(conn, limit):
     rows = cur.execute(f"""
         SELECT r.id AS rid, r.campaign_id, r.employee_id, e.owner_account_id,
                e.name, e.email, e.title, e.department, e.phone, e.signature,
-               t.subject, t.body, t.signature AS tpl_signature,
+               t.id AS tpl_id, t.subject, t.body, t.signature AS tpl_signature,
                c.send_date AS c_send_date, c.send_time AS c_send_time
         FROM campaign_recipients r
         JOIN campaigns c ON c.id = r.campaign_id
@@ -2492,9 +2571,12 @@ def _process_batch_core(conn, limit):
                 sig_html = _signature_html(acc_sig, acc_logo)
             if sig_html:
                 html += "<br><br>" + sig_html
+            _att_ids = _tpl_att_ids(cur, "camp",
+                                    row["tpl_id"] if "tpl_id" in row.keys() else None, "msg")
             ok, message = internal_deliver(
                 account["email"], account["display_name"] or "", row["email"], subject, html,
-                date_override=campaign_date, campaign_id=row["campaign_id"])
+                date_override=campaign_date, campaign_id=row["campaign_id"],
+                attachment_ids=_att_ids)
         else:
             ok, message = send_email(account, row["email"], subject, full_body,
                                      save_to_sent=cfg["save_to_sent"])
@@ -2832,10 +2914,17 @@ def flush_reverse_queue(limit=None):
                             + _rich_signature_html(emp, _effective_logo(sig_logo)))
                 else:
                     html = _signature_html(body, _effective_logo(sig_logo))
+                # مرفقات الرد = مرفقات «الرد» لقالب الحملة (لو الرسالة من حملة)
+                _rep_att = []
+                if camp_id:
+                    _ct = conn.execute("SELECT template_id FROM campaigns WHERE id=?",
+                                       (camp_id,)).fetchone()
+                    if _ct:
+                        _rep_att = _tpl_att_ids(conn, "camp", _ct["template_id"], "reply")
                 ok, res = internal_deliver(row["emp_email"], row["name"] or "",
                                            row["account_email"], subject,
                                            html, in_reply_to=in_reply_to, conn=conn,
-                                           date_override=reply_date)
+                                           date_override=reply_date, attachment_ids=_rep_att)
                 err = None if ok else res
                 if ok and row["uid"]:
                     conn.execute("UPDATE mail_messages SET is_replied=1 WHERE id=?", (row["uid"],))
@@ -4504,6 +4593,9 @@ MSG_TEMPLATES_TPL = """
  .cfg-acc small{color:#8a93a5;font-size:.68rem}
  .cfg-vars{color:#6b7280;font-size:.74rem;margin-top:6px}
  .cfg-vars code{background:#eef2f9;color:#0f6cbd;padding:1px 5px;border-radius:4px}
+ .cfg-att{display:inline-flex;align-items:center;gap:5px;background:#eef6ff;border:1px solid #cfe0f3;
+   color:#0f6cbd;border-radius:6px;padding:2px 8px;margin:3px 4px 3px 0;font-size:.76rem}
+ .cfg-att a{color:#c0392b;font-weight:800;text-decoration:none;font-size:1rem;line-height:1}
  .mt-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px}
  .mt-add{margin-bottom:0}
  .mt-filter{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #d5dae4;
@@ -4569,7 +4661,8 @@ MSG_TEMPLATES_TPL = """
   {% set sel = (t.send_accounts or '').split(',') %}
   <div class="modal fade" id="cfg{{ t.id }}" tabindex="-1"><div class="modal-dialog modal-lg">
    <div class="modal-content">
-    <form method="POST" action="{{ url_for('template_config', tid=t.id) }}">
+    <form method="POST" action="{{ url_for('template_config', tid=t.id) }}"
+          enctype="multipart/form-data">
      <div class="modal-header">
       <h5 class="modal-title"><i class="bi bi-arrow-left-right text-primary"></i>
        الإرسال والاستقبال — {{ t.name }}</h5>
@@ -4587,6 +4680,15 @@ MSG_TEMPLATES_TPL = """
          </label>
         {% else %}<div class="text-muted small">لا توجد حسابات رئيسية.</div>{% endfor %}
        </div>
+       <div class="cfg-h mt-3"><i class="bi bi-paperclip"></i> مرفقات الرسالة (المرسَل)</div>
+       <div class="cfg-note">ملفات تتبعت مع رسالة القالب وتظهر في البريد.</div>
+       {% set a_msg = (tpl_atts.get(t.id) or {}).get('msg') or [] %}
+       {% for at in a_msg %}
+        <div class="cfg-att"><i class="bi bi-file-earmark"></i> {{ at.filename }}
+         <a href="{{ url_for('template_attachment_delete', aid=at.id) }}"
+            onclick="return confirm('حذف المرفق؟')" title="حذف">&times;</a></div>
+       {% endfor %}
+       <input type="file" name="att_msg" class="form-control form-control-sm mt-1" multiple>
       </div>
       <div class="cfg-sec">
        <div class="cfg-h"><i class="bi bi-robot"></i> رد الموظفين التلقائي على القالب ده (الاستقبال)</div>
@@ -4596,6 +4698,15 @@ MSG_TEMPLATES_TPL = """
         placeholder="شكراً على رسالتكم، تم الاطلاع وسيتم الرد قريباً.">{{ t.reply_body }}</textarea>
        <div class="cfg-vars">المتغيرات: <code>{name}</code> <code>{first_name}</code>
         <code>{title}</code> <code>{department}</code> <code>{phone}</code> <code>{email}</code></div>
+       <div class="cfg-h mt-3"><i class="bi bi-paperclip"></i> مرفقات الرد (المستقبَل)</div>
+       <div class="cfg-note">ملفات تتبعت مع الرد وتظهر في البريد.</div>
+       {% set a_rep = (tpl_atts.get(t.id) or {}).get('reply') or [] %}
+       {% for at in a_rep %}
+        <div class="cfg-att"><i class="bi bi-file-earmark"></i> {{ at.filename }}
+         <a href="{{ url_for('template_attachment_delete', aid=at.id) }}"
+            onclick="return confirm('حذف المرفق؟')" title="حذف">&times;</a></div>
+       {% endfor %}
+       <input type="file" name="att_reply" class="form-control form-control-sm mt-1" multiple>
       </div>
      </div>
      <div class="modal-footer">
@@ -9644,11 +9755,18 @@ def message_templates_page():
                WHERE se.status='sent' GROUP BY c.template_id""").fetchall():
         if r["tid"] is not None:
             sent_counts[r["tid"]] = r["n"]
+    # مرفقات القوالب: {tid: {'msg': [...], 'reply': [...]}}
+    tpl_atts = {}
+    for a in conn.execute(
+            "SELECT id, template_id, scope, filename FROM tpl_attachments "
+            "WHERE template_kind='camp' ORDER BY id").fetchall():
+        tpl_atts.setdefault(a["template_id"], {"msg": [], "reply": []}).setdefault(
+            a["scope"], []).append(a)
     rctx = _reverse_ctx(conn)
     conn.close()
     today = datetime.now().strftime("%Y-%m-%d")
     return render("msg_templates.html", "القوالب والردود التلقائية", rows=rows,
-                  sent_counts=sent_counts, today=today, **rctx)
+                  sent_counts=sent_counts, tpl_atts=tpl_atts, today=today, **rctx)
 
 
 @app.route("/templates/signature", methods=["POST"])
@@ -9754,9 +9872,30 @@ def template_config(tid):
         abort(404)
     conn.execute("UPDATE templates SET send_accounts=?, reply_body=? WHERE id=?",
                  (send_accounts, reply_body, tid))
+    # مرفقات الرسالة + مرفقات الرد (اختياري)
+    n1, e1 = _save_tpl_attachments(conn, "camp", tid, "msg",
+                                   request.files.getlist("att_msg"))
+    n2, e2 = _save_tpl_attachments(conn, "camp", tid, "reply",
+                                   request.files.getlist("att_reply"))
     conn.commit()
     conn.close()
-    flash("تم حفظ إعدادات الإرسال والاستقبال للقالب", "success")
+    msg = "تم حفظ إعدادات الإرسال والاستقبال للقالب"
+    if n1 or n2:
+        msg += " — أُضيف %d مرفق" % (n1 + n2)
+    if e1 or e2:
+        flash("بعض المرفقات لم تُضف: " + " · ".join(e1 + e2), "error")
+    flash(msg, "success")
+    return redirect(url_for("message_templates_page"))
+
+
+@app.route("/templates/attachment/<int:aid>/delete")
+def template_attachment_delete(aid):
+    conn = get_connection()
+    conn.execute("DELETE FROM msg_attachments WHERE tpl_att_id=?", (aid,))
+    conn.execute("DELETE FROM tpl_attachments WHERE id=?", (aid,))
+    conn.commit()
+    conn.close()
+    flash("تم حذف المرفق", "info")
     return redirect(url_for("message_templates_page"))
 
 
@@ -11597,6 +11736,29 @@ def _int_build_raw(row):
     text = _re.sub(r"<[^>]+>", "", body.replace("<br>", "\n").replace("<br/>", "\n"))
     msg.set_content(text or " ")
     msg.add_alternative(body or " ", subtype="html")
+    # المرفقات المربوطة بالرسالة (عبر msg_id) — تظهر وتتنزّل في البريد
+    mid = row["msg_id"] if ("msg_id" in row.keys()) else None
+    if mid:
+        conn = get_connection()
+        try:
+            atts = conn.execute(
+                """SELECT ta.filename, ta.content_type, ta.data
+                   FROM msg_attachments ma JOIN tpl_attachments ta ON ta.id = ma.tpl_att_id
+                   WHERE ma.msg_id = ?""", (mid,)).fetchall()
+        except Exception:  # noqa: BLE001
+            atts = []
+        finally:
+            conn.close()
+        for a in atts:
+            try:
+                raw = base64.b64decode(a["data"])
+                ctype = (a["content_type"] or "application/octet-stream")
+                maintype, _, subtype = ctype.partition("/")
+                msg.add_attachment(raw, maintype=maintype or "application",
+                                   subtype=subtype or "octet-stream",
+                                   filename=a["filename"])
+            except Exception:  # noqa: BLE001
+                log.debug("تعذّر إرفاق %s", a["filename"] if "filename" in a.keys() else "?")
     return msg.as_bytes()
 
 
