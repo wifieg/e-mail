@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.41"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.42"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -484,6 +484,17 @@ def init_db():
             signature  TEXT NOT NULL DEFAULT '',
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
+        -- قوالب الاتجاه العكسي: الموظف يرسل للحساب الرئيسي (منفصلة عن قوالب الحملات)
+        CREATE TABLE IF NOT EXISTS emp_templates (
+            id            INTEGER PRIMARY KEY AUTOINCREMENT,
+            name          TEXT NOT NULL,
+            body          TEXT NOT NULL DEFAULT '',   -- نص رسالة الموظف
+            reply_body    TEXT NOT NULL DEFAULT '',   -- رد الحساب الرئيسي
+            send_accounts TEXT NOT NULL DEFAULT '',   -- الحسابات المخصّصة (مرجع/فلترة)
+            created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
         CREATE TABLE IF NOT EXISTS app_settings (
@@ -4953,101 +4964,241 @@ QUICKSEND_TPL = """
 
 EMP2ACC_TPL = """
 {% extends "base.html" %}{% block content %}
-<div class="d-flex align-items-center gap-2 mb-1">
- <h1 class="mb-0"><i class="bi bi-arrow-left-right text-primary"></i> الموظف يرسل للحساب</h1></div>
-<div class="text-muted small mb-3">العكس: <b>الموظفون</b> يبعتوا إيميل لحسابهم الرئيسي،
- و<b>الحساب الرئيسي</b> يرد عليهم — بنفس نظام القوالب، وبتاريخ ووقت للإرسال وللرد.</div>
-
-{% if not templates %}
- <div class="alert alert-warning">أضف <b>قالب رسالة</b> أولاً من
-  <a href="{{ url_for('message_templates_page') }}">قوالب الرسائل المرسلة</a>.</div>
-{% else %}
-<form method="POST" action="{{ url_for('emp_to_account_send') }}" class="card card-body"
-      style="max-width:820px">
- <div class="row">
-  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
-    <i class="bi bi-file-earmark-text text-primary"></i> قالب رسالة الموظف</label>
-   <select name="template_id" id="e2aTemplate" class="form-select" required>
-    {% for t in templates %}<option value="{{ t.id }}"
-     data-name="{{ t.name }}"
-     data-reply="{{ (t.reply_body or '')|e }}">{{ t.name }}</option>{% endfor %}
+<style>
+ .mt-wrap{max-width:none;margin:0;padding:0 6px}
+ .mt-head{display:flex;align-items:center;gap:8px;margin-bottom:2px}
+ .mt-head i{font-size:1.25rem;color:#0f6cbd}
+ .mt-head h2{font-size:1.2rem;margin:0;font-weight:700;color:#1f2937}
+ .mt-sub{color:#6b7280;font-size:.8rem;margin-bottom:8px}
+ .mt-add{background:#0f6cbd;border:none;color:#fff;padding:6px 14px;border-radius:7px;
+   font-size:.84rem;font-weight:600;cursor:pointer}
+ .mt-add:hover{background:#115ea3}
+ .mt-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+ .mt-filter{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #d5dae4;
+   border-radius:8px;padding:5px 10px}
+ .mt-filter i{color:#0f6cbd}
+ .mt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
+ .mt-card{background:#fff;border:1.5px solid #c7d0e0;border-inline-start:4px solid #16a34a;
+   border-radius:10px;padding:10px 12px;box-shadow:0 1px 6px rgba(20,40,80,.06)}
+ .mt-card-t{display:flex;align-items:center;gap:6px;margin-bottom:6px;padding-bottom:6px;
+   border-bottom:2px solid #eef1f6}
+ .mt-card-t .nm{font-weight:700;color:#16a34a;font-size:.9rem}
+ .mt-card-t .nm-btn{background:none;border:none;padding:0;cursor:pointer;text-align:start}
+ .mt-card-t .nm-btn:hover{text-decoration:underline}
+ .mt-cfg{margin-inline-start:auto;background:#eef6ff;border:1px solid #bcd9f5;color:#0f6cbd;
+   font-size:.7rem;font-weight:700;padding:3px 8px;border-radius:20px;cursor:pointer;white-space:nowrap}
+ .mt-cfg:hover{background:#dbeafe}
+ .mt-send-btn{background:#16a34a;border:1px solid #16a34a;color:#fff;font-size:.7rem;font-weight:800;
+   padding:3px 12px;border-radius:20px;cursor:pointer;white-space:nowrap}
+ .mt-send-btn:hover{background:#12813a}
+ .mt-senders{font-size:.7rem;color:#0a7d33;margin-top:4px;min-height:1em}
+ .mt-senders i{font-size:.72rem}
+ .mt-lbl{font-size:.72rem;color:#6b7280;font-weight:600;margin:6px 0 2px}
+ .mt-inp{width:100%;border:1px solid #d5dae4;border-radius:6px;padding:5px 8px;font-size:.82rem;
+   color:#243043;outline:none;background:#fcfdff}
+ .mt-inp:focus{border-color:#16a34a;box-shadow:0 0 0 3px rgba(22,163,74,.1)}
+ textarea.mt-inp{font-family:'Consolas','Courier New',monospace;line-height:1.5;resize:vertical}
+ .mt-actions{display:flex;gap:6px;margin-top:8px}
+ .mt-save{background:#16a34a;border:none;color:#fff;padding:6px 16px;border-radius:7px;
+   font-size:.83rem;font-weight:600;cursor:pointer}
+ .mt-save:hover{background:#12813a}
+ .mt-del{background:#fff;border:1px solid #e0b3b6;color:#c0392b;padding:6px 14px;border-radius:7px;
+   font-size:.83rem;font-weight:600;text-decoration:none}
+ .mt-del:hover{background:#fde7e9}
+ .mt-vars{color:#6b7280;font-size:.8rem;margin-top:16px;line-height:1.8}
+ .mt-vars code{background:#eef2f9;color:#16a34a;padding:1px 6px;border-radius:5px;font-size:.78rem}
+ .cfg-sec{border:1px solid #e3e8f0;border-radius:10px;padding:10px 12px;margin-bottom:12px;background:#fbfcfe}
+ .cfg-h{font-weight:700;color:#1f2937;font-size:.92rem;margin-bottom:3px}
+ .cfg-h i{color:#0f6cbd;margin-inline-end:4px}
+ .cfg-note{color:#6b7280;font-size:.76rem;margin-bottom:8px;line-height:1.6}
+ .cfg-accs{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:6px}
+ .cfg-acc{display:flex;align-items:center;gap:6px;border:1px solid #d9e0ec;border-radius:7px;
+   padding:5px 8px;cursor:pointer;background:#fff;font-size:.8rem}
+ .cfg-acc:hover{border-color:#0f6cbd;background:#f4f9ff}
+ .cfg-acc span{display:flex;flex-direction:column;line-height:1.25}
+ .cfg-acc small{color:#8a93a5;font-size:.68rem}
+ .cfg-vars{color:#6b7280;font-size:.74rem;margin-top:6px}
+ .cfg-vars code{background:#eef2f9;color:#0f6cbd;padding:1px 5px;border-radius:4px}
+</style>
+<div class="mt-wrap">
+ <div class="mt-head"><i class="bi bi-arrow-left-right"></i><h2>الموظف يرسل للحساب</h2></div>
+ <div class="mt-sub">العكس: <b>الموظفون</b> يبعتوا إيميل لحسابهم الرئيسي و<b>الحساب الرئيسي</b> يرد عليهم —
+  قوالب مستقلة للاتجاه ده (غير قوالب الحملات).</div>
+ <div class="mt-bar">
+  <button class="mt-add" data-bs-toggle="modal" data-bs-target="#e2aAdd">
+   <i class="bi bi-plus-circle"></i> قالب جديد</button>
+  <div class="mt-filter">
+   <i class="bi bi-funnel-fill"></i>
+   <label class="small text-muted">فلتر بالحساب:</label>
+   <select id="mtFilter" class="form-select form-select-sm" style="width:auto;min-width:200px">
+    <option value="">كل الحسابات</option>
+    {% for a in accs %}<option value="{{ a.id }}">{{ a.display_name or a.email }}</option>{% endfor %}
+    <option value="__none__">— بدون حساب محدد —</option>
    </select>
-   <div class="form-text">نص القالب هو اللي الموظف هيبعته لحسابه الرئيسي (+ توقيع الموظف تلقائيًا).</div></div>
-  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
-    <i class="bi bi-person-badge text-success"></i> الموظفون (حسب الحساب الرئيسي)</label>
-   <select name="scope_account" class="form-select">
-    <option value="">كل الموظفين ({{ total_emp }})</option>
-    {% for a in accs %}<option value="{{ a.id }}">
-     {{ a.display_name or a.email }} — {{ a.n_emp }} موظف</option>{% endfor %}
-   </select></div>
+   <span id="mtFilterCount" class="small text-muted"></span>
+  </div>
  </div>
- <div class="row">
-  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
-    <i class="bi bi-diagram-3 text-primary"></i> القسم (اختياري)</label>
-   <select name="department" class="form-select">
-    <option value="">كل الأقسام</option>
-    {% for d in depts %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
-   </select></div>
-  <div class="col-md-6 mb-3"><label class="fw-semibold mb-1">
-    <i class="bi bi-card-heading"></i> موضوع الرسالة</label>
-   <input name="subject" id="e2aSubject" class="form-control"
-          placeholder="(اسم القالب تلقائيًا)"></div>
+ <div class="mt-grid">
+ {% for t in rows %}
+  {% set sel = (t.send_accounts or '').split(',') %}
+  <div class="mt-card" data-senders="{{ t.send_accounts or '' }}">
+   <div class="mt-card-t">
+    <i class="bi bi-envelope-arrow-up text-success"></i>
+    <button type="button" class="nm nm-btn" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}"
+            title="إعداد الإرسال والاستقبال">{{ t.name }}</button>
+    <button type="button" class="mt-cfg" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}">
+     <i class="bi bi-arrow-left-right"></i> إرسال/استقبال</button>
+    <button type="button" class="mt-send-btn" data-bs-toggle="modal" data-bs-target="#snd{{ t.id }}">
+     <i class="bi bi-send-fill"></i> إرسال</button>
+   </div>
+   <div class="mt-senders">
+    {% set snames = [] %}
+    {% for a in accs %}{% if a.id|string in sel %}{% set _ = snames.append(a.display_name or a.email) %}{% endif %}{% endfor %}
+    {% if snames %}<i class="bi bi-person-check"></i> الحسابات: {{ snames|join(' · ') }}{% endif %}
+    {% if (t.reply_body or '').strip() %}<span style="color:#b26a00;margin-inline-start:6px"><i class="bi bi-reply-fill"></i> له رد حساب</span>{% endif %}
+   </div>
+   <form method="POST" action="{{ url_for('emp_template_edit', tid=t.id) }}">
+    <div class="mt-lbl">اسم القالب</div>
+    <input name="name" class="mt-inp" value="{{ t.name }}">
+    <div class="mt-lbl">نص رسالة الموظف</div>
+    <textarea name="body" class="mt-inp" rows="5">{{ t.body }}</textarea>
+    <div class="mt-actions">
+     <button class="mt-save"><i class="bi bi-check-lg"></i> حفظ</button>
+     <a class="mt-del" href="{{ url_for('emp_template_delete', tid=t.id) }}"
+        onclick="return confirm('حذف القالب؟')"><i class="bi bi-trash"></i> حذف</a>
+    </div>
+   </form>
+  </div>
+ {% else %}<p class="text-muted">لا توجد قوالب — اضغط «قالب جديد».</p>{% endfor %}
  </div>
- <div class="mb-3"><label class="fw-semibold mb-1">
-   <i class="bi bi-envelope-arrow-down text-primary"></i> رد الحساب الرئيسي (اختياري)</label>
-  <textarea name="acc_reply" id="e2aReply" class="form-control" rows="4"
-   placeholder="تم استلام رسالتك، شكرًا {name}."></textarea>
-  <div class="form-text">بيتعبّى تلقائيًا من رد القالب لو موجود — وتقدر تعدّله. لو سِبته فاضي
-   الموظف يبعت بس من غير رد. ويُضاف توقيع الحساب تلقائيًا.
-   المتغيرات: <code>{name}</code> <code>{first_name}</code> <code>{title}</code>
-   <code>{department}</code> <code>{email}</code>.</div></div>
- <div class="row">
-  <div class="col-6 col-md-3 mb-2"><label class="small">
-    <i class="bi bi-calendar-event text-danger"></i> تاريخ الإرسال</label>
-   <input name="send_date" type="date" class="form-control" value="{{ today }}" required></div>
-  <div class="col-6 col-md-3 mb-2"><label class="small">
-    <i class="bi bi-clock"></i> ساعة الإرسال</label>
-   <input name="send_time" id="e2aSendTime" type="time" class="form-control"
-          value="12:00" required></div>
-  <div class="col-6 col-md-3 mb-2"><label class="small">
-    <i class="bi bi-reply-fill text-success"></i> تاريخ الرد</label>
-   <input name="reply_date" type="date" class="form-control" value="{{ today }}" required></div>
-  <div class="col-6 col-md-3 mb-2"><label class="small">
-    <i class="bi bi-clock-history"></i> ساعة الرد</label>
-   <input name="reply_time" id="e2aReplyTime" type="time" class="form-control"
-          value="12:00" required></div>
- </div>
- <div class="alert alert-light border py-2 small mb-3"><i class="bi bi-info-circle text-primary"></i>
-  الرسائل تتسجّل بالتاريخ والوقت اللي تحددهم (رسالة الموظف بوقت الإرسال، ورد الحساب بوقت الرد).
-  تقدر تشوفهم في <a href="{{ url_for('accounts') }}">الحسابات المرسِلة</a>
-  و<a href="{{ url_for('employees') }}">الموظفين</a> (مُرسَلة/مُستقبَلة) أو من البريد.</div>
- <div class="d-flex gap-2">
-  <button class="btn btn-primary btn-lg"><i class="bi bi-send-check"></i> ابدأ الإرسال</button>
- </div>
-</form>
+
+ {# نافذة الإعداد: الحسابات المخصّصة + رد الحساب الرئيسي #}
+ {% for t in rows %}
+  {% set sel = (t.send_accounts or '').split(',') %}
+  <div class="modal fade" id="cfg{{ t.id }}" tabindex="-1"><div class="modal-dialog modal-lg">
+   <div class="modal-content">
+    <form method="POST" action="{{ url_for('emp_template_config', tid=t.id) }}">
+     <div class="modal-header">
+      <h5 class="modal-title"><i class="bi bi-arrow-left-right text-primary"></i>
+       الإرسال والاستقبال — {{ t.name }}</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+     <div class="modal-body">
+      <div class="cfg-sec">
+       <div class="cfg-h"><i class="bi bi-person-badge"></i> موظفو أي حساب يبعتوا القالب ده؟</div>
+       <div class="cfg-note">اختَر الحسابات الرئيسية — موظفوها هم اللي يبعتوا هذا القالب. بتظهر على الكارت وبتُستخدم في الفلترة وفي تحديد النطاق عند الإرسال.</div>
+       <div class="cfg-accs">
+        {% for a in accs %}
+         <label class="cfg-acc">
+          <input type="checkbox" name="send_accounts" value="{{ a.id }}"
+                 {{ 'checked' if a.id|string in sel else '' }}>
+          <span>{{ a.display_name or a.email }}<small>{{ a.email }}</small></span>
+         </label>
+        {% else %}<div class="text-muted small">لا توجد حسابات رئيسية.</div>{% endfor %}
+       </div>
+      </div>
+      <div class="cfg-sec">
+       <div class="cfg-h"><i class="bi bi-reply-fill"></i> رد الحساب الرئيسي على القالب ده</div>
+       <div class="cfg-note">لما الحساب يستلم رسالة الموظف من هذا القالب، يرد بالنص ده (وقت الرد اللي تحدده عند الإرسال). لو سِبته فاضي، الموظف يبعت بس من غير رد.</div>
+       <textarea name="reply_body" class="form-control" rows="6"
+        placeholder="تم استلام رسالتك، شكرًا {name}.">{{ t.reply_body }}</textarea>
+       <div class="cfg-vars">المتغيرات: <code>{name}</code> <code>{first_name}</code>
+        <code>{title}</code> <code>{department}</code> <code>{email}</code></div>
+      </div>
+     </div>
+     <div class="modal-footer">
+      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> حفظ الإعدادات</button></div>
+    </form>
+   </div></div></div>
+ {% endfor %}
+
+ {# نافذة الإرسال: النطاق + تاريخ ووقت الإرسال والرد #}
+ {% for t in rows %}
+  {% set sel = (t.send_accounts or '').split(',') %}
+  <div class="modal fade" id="snd{{ t.id }}" tabindex="-1"><div class="modal-dialog">
+   <div class="modal-content">
+    <form method="POST" action="{{ url_for('emp_to_account_send') }}">
+     <input type="hidden" name="template_id" value="{{ t.id }}">
+     <div class="modal-header">
+      <h5 class="modal-title"><i class="bi bi-send-fill text-success"></i> إرسال: {{ t.name }}</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+     <div class="modal-body">
+      <div class="mb-2"><label class="small fw-semibold">
+        <i class="bi bi-person-badge text-success"></i> الموظفون (حسب الحساب)</label>
+       <select name="scope_account" class="form-select form-select-sm">
+        <option value="">كل الموظفين ({{ total_emp }})</option>
+        {% for a in accs %}<option value="{{ a.id }}"
+         {{ 'selected' if a.id|string in sel else '' }}>{{ a.display_name or a.email }}
+         — {{ a.n_emp }} موظف</option>{% endfor %}
+       </select></div>
+      <div class="mb-2"><label class="small fw-semibold">
+        <i class="bi bi-diagram-3 text-primary"></i> القسم (اختياري)</label>
+       <select name="department" class="form-select form-select-sm">
+        <option value="">كل الأقسام</option>
+        {% for d in depts %}<option value="{{ d }}">{{ d }}</option>{% endfor %}
+       </select></div>
+      <div class="row">
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-calendar-event text-danger"></i> تاريخ الإرسال</label>
+        <input name="send_date" type="date" class="form-control" value="{{ today }}" required></div>
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-clock"></i> ساعة الإرسال</label>
+        <input name="send_time" type="time" class="form-control sndTime" value="12:00" required></div>
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-reply-fill text-success"></i> تاريخ الرد</label>
+        <input name="reply_date" type="date" class="form-control" value="{{ today }}" required></div>
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-clock-history"></i> ساعة الرد</label>
+        <input name="reply_time" type="time" class="form-control sndTime" value="12:00" required></div>
+      </div>
+      <div class="form-text"><i class="bi bi-info-circle"></i> رسالة الموظف تتسجّل بوقت الإرسال،
+       ورد الحساب (لو موجود في إعداد القالب) بوقت الرد. شوفهم في
+       <a href="{{ url_for('accounts') }}">الحسابات</a> و<a href="{{ url_for('employees') }}">الموظفين</a>.</div>
+     </div>
+     <div class="modal-footer">
+      <button class="btn btn-success"><i class="bi bi-send-check"></i> ابدأ الإرسال</button></div>
+    </form>
+   </div></div></div>
+ {% endfor %}
+ <div class="mt-vars">متغيرات النص: <code>{name}</code> <code>{first_name}</code>
+  <code>{title}</code> <code>{department}</code> <code>{email}</code> — ويُضاف توقيع الموظف تلقائيًا.</div>
+</div>
+
+<div class="modal fade" id="e2aAdd" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
+ <form method="POST" action="{{ url_for('emp_template_add') }}">
+  <div class="modal-header"><h5 class="modal-title">قالب جديد (رسالة الموظف)</h5>
+   <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+  <div class="modal-body">
+   <div class="mb-2"><label>اسم القالب</label><input name="name" class="form-control" required></div>
+   <div class="mb-2"><label>نص رسالة الموظف</label>
+    <textarea name="body" class="form-control" rows="6" required></textarea></div>
+   <div class="form-text">بعد الحفظ تقدر تحدّد الحسابات ورد الحساب من زر «إرسال/استقبال».</div>
+  </div>
+  <div class="modal-footer"><button class="btn btn-primary">حفظ</button></div>
+ </form>
+</div></div></div>
 <script>
-(function(){
- // الساعات على الآن (توقيت السعودية)
- try{
-  var now=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Riyadh'}));
-  var hh=('0'+now.getHours()).slice(-2), mm=('0'+now.getMinutes()).slice(-2);
-  var s=document.getElementById('e2aSendTime'), r=document.getElementById('e2aReplyTime');
-  if(s) s.value=hh+':'+mm; if(r) r.value=hh+':'+mm;
- }catch(e){}
- // لما تختار قالب: يتعبّى الموضوع (اسم القالب) ورد الحساب (رد القالب) لو فاضيين
- var tpl=document.getElementById('e2aTemplate');
- var subj=document.getElementById('e2aSubject');
- var rep=document.getElementById('e2aReply');
- function apply(){
-  var o=tpl.options[tpl.selectedIndex]; if(!o) return;
-  var nm=o.getAttribute('data-name')||'', rp=o.getAttribute('data-reply')||'';
-  if(subj && !subj.value.trim()) subj.value=nm;
-  if(rep && !rep.value.trim()) rep.value=rp;
- }
- if(tpl){ tpl.addEventListener('change', apply); apply(); }
-})();
+ // ساعات الإرسال/الرد على الآن (توقيت السعودية) في كل نوافذ الإرسال
+ (function(){try{
+   var now=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Riyadh'}));
+   var hh=('0'+now.getHours()).slice(-2), mm=('0'+now.getMinutes()).slice(-2);
+   document.querySelectorAll('.sndTime').forEach(function(el){el.value=hh+':'+mm;});
+ }catch(e){}})();
+ // فلترة القوالب بالحساب
+ (function(){
+   var sel=document.getElementById('mtFilter'), cnt=document.getElementById('mtFilterCount');
+   if(!sel) return;
+   function run(){
+     var v=sel.value, shown=0;
+     document.querySelectorAll('.mt-grid .mt-card').forEach(function(c){
+       var ids=(c.getAttribute('data-senders')||'').split(',').filter(Boolean);
+       var ok = !v ? true : (v==='__none__' ? ids.length===0 : ids.indexOf(v)!==-1);
+       c.style.display = ok ? '' : 'none'; if(ok) shown++;
+     });
+     if(cnt) cnt.textContent = v ? ('(' + shown + ' قالب)') : '';
+   }
+   sel.addEventListener('change', run); run();
+ })();
 </script>
-{% endif %}
 {% endblock %}
 """
 
@@ -9678,10 +9829,9 @@ def _emp_to_account_run(emp_ids, subject, emp_msg, acc_reply, send_dt, reply_dt)
 @app.route("/emp-to-account")
 def emp_to_account():
     """شاشة: الموظفون يرسلون للحساب الرئيسي، والحساب الرئيسي يرد عليهم.
-    زي نظام القوالب: تختار قالب رسالة الموظف + تاريخ ووقت للإرسال وللرد."""
+    نظام قوالب مستقل للاتجاه العكسي (كروت + إرسال/استقبال + إرسال)."""
     conn = get_connection()
-    templates = conn.execute(
-        "SELECT id, name, body, reply_body FROM templates ORDER BY name").fetchall()
+    rows = conn.execute("SELECT * FROM emp_templates ORDER BY id DESC").fetchall()
     accs = conn.execute(
         "SELECT id, email, display_name, "
         "(SELECT COUNT(*) FROM employees e WHERE e.owner_account_id=accounts.id "
@@ -9694,8 +9844,63 @@ def emp_to_account():
         "AND owner_account_id IS NOT NULL").fetchone()["c"]
     conn.close()
     today = datetime.now().strftime("%Y-%m-%d")
-    return render("emp2acc.html", "الموظف يرسل للحساب", templates=templates, accs=accs,
+    return render("emp2acc.html", "الموظف يرسل للحساب", rows=rows, accs=accs,
                   depts=depts, total_emp=total_emp, today=today)
+
+
+@app.route("/emp-templates/add", methods=["POST"])
+def emp_template_add():
+    name = (request.form.get("name", "") or "").strip()
+    body = request.form.get("body", "")
+    if not name:
+        flash("اكتب اسم القالب", "error")
+        return redirect(url_for("emp_to_account"))
+    conn = get_connection()
+    conn.execute("INSERT INTO emp_templates (name, body) VALUES (?, ?)", (name, body))
+    conn.commit()
+    conn.close()
+    flash("تم حفظ قالب الموظف", "success")
+    return redirect(url_for("emp_to_account"))
+
+
+@app.route("/emp-templates/<int:tid>/edit", methods=["POST"])
+def emp_template_edit(tid):
+    f = request.form
+    conn = get_connection()
+    conn.execute("UPDATE emp_templates SET name=?, body=?, updated_at=CURRENT_TIMESTAMP WHERE id=?",
+                 ((f.get("name", "") or "").strip(), f.get("body", ""), tid))
+    conn.commit()
+    conn.close()
+    flash("تم تحديث القالب", "success")
+    return redirect(url_for("emp_to_account"))
+
+
+@app.route("/emp-templates/<int:tid>/delete")
+def emp_template_delete(tid):
+    conn = get_connection()
+    conn.execute("DELETE FROM emp_templates WHERE id=?", (tid,))
+    conn.commit()
+    conn.close()
+    flash("تم حذف القالب", "info")
+    return redirect(url_for("emp_to_account"))
+
+
+@app.route("/emp-templates/<int:tid>/config", methods=["POST"])
+def emp_template_config(tid):
+    """إعداد قالب الموظف: الحسابات المخصّصة + رد الحساب الرئيسي."""
+    f = request.form
+    send_accounts = ",".join(a for a in f.getlist("send_accounts") if a.isdigit())
+    reply_body = f.get("reply_body", "")
+    conn = get_connection()
+    if not conn.execute("SELECT 1 FROM emp_templates WHERE id=?", (tid,)).fetchone():
+        conn.close()
+        abort(404)
+    conn.execute("UPDATE emp_templates SET send_accounts=?, reply_body=? WHERE id=?",
+                 (send_accounts, reply_body, tid))
+    conn.commit()
+    conn.close()
+    flash("تم حفظ إعدادات الإرسال والاستقبال للقالب", "success")
+    return redirect(url_for("emp_to_account"))
 
 
 @app.route("/emp-to-account/send", methods=["POST"])
@@ -9709,7 +9914,7 @@ def emp_to_account_send():
     reply_date = (f.get("reply_date", "") or "").strip()
     reply_time = (f.get("reply_time", "") or "12:00").strip() or "12:00"
     conn = get_connection()
-    tpl = (conn.execute("SELECT id, name, body, reply_body FROM templates WHERE id=?",
+    tpl = (conn.execute("SELECT id, name, body, reply_body FROM emp_templates WHERE id=?",
                         (int(template_id),)).fetchone() if template_id.isdigit() else None)
     if not tpl:
         conn.close()
