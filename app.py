@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.40"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.41"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4462,16 +4462,33 @@ MSG_TEMPLATES_TPL = """
  .cfg-acc small{color:#8a93a5;font-size:.68rem}
  .cfg-vars{color:#6b7280;font-size:.74rem;margin-top:6px}
  .cfg-vars code{background:#eef2f9;color:#0f6cbd;padding:1px 5px;border-radius:4px}
+ .mt-bar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:10px}
+ .mt-add{margin-bottom:0}
+ .mt-filter{display:flex;align-items:center;gap:6px;background:#fff;border:1px solid #d5dae4;
+   border-radius:8px;padding:5px 10px}
+ .mt-filter i{color:#0f6cbd}
 </style>
 <div class="mt-wrap">
  <div class="mt-head"><i class="bi bi-megaphone"></i><h2>قوالب الرسائل المرسلة</h2></div>
  <div class="mt-sub">نصوص الرسائل اللي بتختار منها لما تعمل <b>حملة</b> إرسال جماعي — مش لها علاقة بالتوقيع.</div>
- <button class="mt-add" data-bs-toggle="modal" data-bs-target="#add">
-  <i class="bi bi-plus-circle"></i> قالب رسالة جديد</button>
+ <div class="mt-bar">
+  <button class="mt-add" data-bs-toggle="modal" data-bs-target="#add">
+   <i class="bi bi-plus-circle"></i> قالب رسالة جديد</button>
+  <div class="mt-filter">
+   <i class="bi bi-funnel-fill"></i>
+   <label class="small text-muted">فلتر بالمرسِل:</label>
+   <select id="mtFilter" class="form-select form-select-sm" style="width:auto;min-width:200px">
+    <option value="">كل المرسلين</option>
+    {% for a in accs %}<option value="{{ a.id }}">{{ a.display_name or a.email }}</option>{% endfor %}
+    <option value="__none__">— بدون مرسِل محدد —</option>
+   </select>
+   <span id="mtFilterCount" class="small text-muted"></span>
+  </div>
+ </div>
  <div class="mt-grid">
  {% for t in rows %}
   {% set sel = (t.send_accounts or '').split(',') %}
-  <div class="mt-card">
+  <div class="mt-card" data-senders="{{ t.send_accounts or '' }}">
    <div class="mt-card-t">
     <i class="bi bi-envelope-paper text-primary"></i>
     <button type="button" class="nm nm-btn" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}"
@@ -4593,6 +4610,27 @@ MSG_TEMPLATES_TPL = """
    var hh=('0'+now.getHours()).slice(-2), mm=('0'+now.getMinutes()).slice(-2);
    document.querySelectorAll('.sndTime').forEach(function(el){el.value=hh+':'+mm;});
  }catch(e){}})();
+ // فلترة القوالب بالمرسِل (الحساب الرئيسي) — فوري
+ (function(){
+   var sel=document.getElementById('mtFilter');
+   var cnt=document.getElementById('mtFilterCount');
+   if(!sel) return;
+   function run(){
+     var v=sel.value, shown=0;
+     var cards=document.querySelectorAll('.mt-grid .mt-card');
+     cards.forEach(function(c){
+       var ids=(c.getAttribute('data-senders')||'').split(',').filter(Boolean);
+       var ok;
+       if(!v) ok=true;                              // كل المرسلين
+       else if(v==='__none__') ok=(ids.length===0); // بدون مرسِل محدد
+       else ok=(ids.indexOf(v)!==-1);               // مرسِل معيّن
+       c.style.display = ok ? '' : 'none';
+       if(ok) shown++;
+     });
+     if(cnt) cnt.textContent = v ? ('(' + shown + ' قالب)') : '';
+   }
+   sel.addEventListener('change', run); run();
+ })();
  </script>
  <div class="mt-vars">المتغيرات داخل نص الرسالة: <code>{name}</code> <code>{first_name}</code>
   <code>{title}</code> <code>{department}</code> <code>{phone}</code> <code>{email}</code> —
