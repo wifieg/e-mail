@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.38"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.40"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4441,8 +4441,14 @@ MSG_TEMPLATES_TPL = """
  .mt-cfg{margin-inline-start:auto;background:#eef6ff;border:1px solid #bcd9f5;color:#0f6cbd;
    font-size:.7rem;font-weight:700;padding:3px 8px;border-radius:20px;cursor:pointer;white-space:nowrap}
  .mt-cfg:hover{background:#dbeafe}
+ .mt-send-btn{background:#0f6cbd;border:1px solid #0f6cbd;color:#fff;font-size:.7rem;font-weight:800;
+   padding:3px 12px;border-radius:20px;cursor:pointer;white-space:nowrap}
+ .mt-send-btn:hover{background:#0b5394}
  .mt-senders{font-size:.7rem;color:#0a7d33;margin-top:4px;min-height:1em}
  .mt-senders i{font-size:.72rem}
+ .mt-sent{display:inline-block;font-size:.72rem;font-weight:800;color:#fff;background:#dc2626;
+   padding:2px 9px;border-radius:20px;margin-top:5px;box-shadow:0 1px 3px rgba(220,38,38,.35)}
+ .mt-sent i{font-size:.72rem;margin-inline-end:2px}
  .cfg-sec{border:1px solid #e3e8f0;border-radius:10px;padding:10px 12px;margin-bottom:12px;background:#fbfcfe}
  .cfg-h{font-weight:700;color:#1f2937;font-size:.92rem;margin-bottom:3px}
  .cfg-h i{color:#0f6cbd;margin-inline-end:4px}
@@ -4472,7 +4478,12 @@ MSG_TEMPLATES_TPL = """
             title="إعداد الإرسال والاستقبال">{{ t.name }}</button>
     <button type="button" class="mt-cfg" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}">
      <i class="bi bi-arrow-left-right"></i> إرسال/استقبال</button>
+    <button type="button" class="mt-send-btn" data-bs-toggle="modal" data-bs-target="#snd{{ t.id }}">
+     <i class="bi bi-send-fill"></i> إرسال</button>
    </div>
+   {% if sent_counts.get(t.id) %}
+   <div class="mt-sent"><i class="bi bi-send-fill"></i> اتبعت {{ sent_counts.get(t.id) }} مرة</div>
+   {% endif %}
    <div class="mt-senders">
     {% set snames = [] %}
     {% for a in accs %}{% if a.id|string in sel %}{% set _ = snames.append(a.display_name or a.email) %}{% endif %}{% endfor %}
@@ -4533,6 +4544,56 @@ MSG_TEMPLATES_TPL = """
     </form>
    </div></div></div>
  {% endfor %}
+
+ {# نافذة الإرسال لكل قالب: تاريخ ووقت الإرسال + تاريخ ووقت الرد #}
+ {% for t in rows %}
+  {% set sel = (t.send_accounts or '').split(',') %}
+  <div class="modal fade" id="snd{{ t.id }}" tabindex="-1"><div class="modal-dialog">
+   <div class="modal-content">
+    <form method="POST" action="{{ url_for('add_campaign') }}">
+     <input type="hidden" name="template_id" value="{{ t.id }}">
+     <div class="modal-header">
+      <h5 class="modal-title"><i class="bi bi-send-fill text-primary"></i> إرسال: {{ t.name }}</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+     <div class="modal-body">
+      <div class="mb-3"><label class="fw-semibold mb-1">
+        <i class="bi bi-person-badge text-success"></i> الحساب المُرسِل (مجموعته)</label>
+       <select name="scope_account" class="form-select">
+        <option value="">كل الموظفين</option>
+        {% for a in accs %}<option value="{{ a.id }}"
+         {{ 'selected' if a.id|string in sel else '' }}>{{ a.display_name or a.email }}</option>{% endfor %}
+       </select></div>
+      <div class="row">
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-calendar-event text-danger"></i> تاريخ الإرسال</label>
+        <input name="send_date" type="date" class="form-control" value="{{ today }}" required></div>
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-clock"></i> ساعة الإرسال</label>
+        <input name="send_time" type="time" class="form-control sndTime" value="12:00" required></div>
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-reply-fill text-success"></i> تاريخ الرد</label>
+        <input name="reply_date" type="date" class="form-control" value="{{ today }}" required></div>
+       <div class="col-6 mb-2"><label class="small">
+         <i class="bi bi-clock-history"></i> ساعة الرد</label>
+        <input name="reply_time" type="time" class="form-control sndTime" value="12:00" required></div>
+      </div>
+      <div class="form-text"><i class="bi bi-info-circle"></i> الحملة تتبعت فورًا وتتوزّع خلال دقيقة،
+       والردود التلقائية توصل حسب تاريخ/وقت الرد. تابعها لحظيًا في
+       <a href="{{ url_for('campaigns') }}">الحملات</a>.</div>
+     </div>
+     <div class="modal-footer">
+      <button class="btn btn-primary"><i class="bi bi-rocket-takeoff"></i> أنشئ وأرسل</button></div>
+    </form>
+   </div></div></div>
+ {% endfor %}
+ <script>
+ // اضبط ساعات الإرسال/الرد على الآن (توقيت السعودية) في كل نوافذ الإرسال
+ (function(){try{
+   var now=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Riyadh'}));
+   var hh=('0'+now.getHours()).slice(-2), mm=('0'+now.getMinutes()).slice(-2);
+   document.querySelectorAll('.sndTime').forEach(function(el){el.value=hh+':'+mm;});
+ }catch(e){}})();
+ </script>
  <div class="mt-vars">المتغيرات داخل نص الرسالة: <code>{name}</code> <code>{first_name}</code>
   <code>{title}</code> <code>{department}</code> <code>{phone}</code> <code>{email}</code> —
   التوقيع يُضاف تلقائياً حسب الحساب المرسِل، وموضوع الإيميل = اسم القالب.</div>
@@ -9304,9 +9365,19 @@ def save_employee_signature(eid):
 def message_templates_page():
     conn = get_connection()
     rows = conn.execute("SELECT * FROM templates ORDER BY id DESC").fetchall()
+    # كام مرة اتبعت كل قالب (رسائل مُرسَلة فعلاً في حملات بتستخدم القالب)
+    sent_counts = {}
+    for r in conn.execute(
+            """SELECT c.template_id AS tid, COUNT(*) AS n
+               FROM sent_emails se JOIN campaigns c ON c.id = se.campaign_id
+               WHERE se.status='sent' GROUP BY c.template_id""").fetchall():
+        if r["tid"] is not None:
+            sent_counts[r["tid"]] = r["n"]
     rctx = _reverse_ctx(conn)
     conn.close()
-    return render("msg_templates.html", "القوالب والردود التلقائية", rows=rows, **rctx)
+    today = datetime.now().strftime("%Y-%m-%d")
+    return render("msg_templates.html", "القوالب والردود التلقائية", rows=rows,
+                  sent_counts=sent_counts, today=today, **rctx)
 
 
 @app.route("/templates/signature", methods=["POST"])
