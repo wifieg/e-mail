@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.42"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.43"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -349,13 +349,16 @@ class _PgConn:
 def get_connection():
     if USE_PG:
         last = None
-        for attempt in range(15):
+        # محاولات قصيرة بسقف ثابت (~8s إجمالاً) عشان لو السيرفر زنق لحظة
+        # ما نعلّقش كل طلب 70 ثانية. البووت الأولي بيتعامل معاه init_db.
+        for attempt in range(8):
             try:
-                raw = psycopg.connect(PG_DSN, row_factory=_pg_rowfactory)
+                raw = psycopg.connect(PG_DSN, row_factory=_pg_rowfactory,
+                                      connect_timeout=5)
                 return _PgConn(raw)
             except psycopg.OperationalError as exc:   # السيرفر لسه بيشتغل — أعِد المحاولة
                 last = exc
-                time.sleep(0.6 * (attempt + 1))
+                time.sleep(min(1.0, 0.3 * (attempt + 1)))
         raise last
     # لا نضبط journal_mode هنا — يُضبط مرة واحدة في init_db.
     last = None
@@ -2341,6 +2344,17 @@ def process_batch(limit=None):
 
 def _process_batch_inner(limit):
     conn = get_connection()
+    try:
+        return _process_batch_core(conn, limit)
+    finally:
+        # ضمان إغلاق الاتصال مهما حصل — عشان ما نكدّسش اتصالات ونعلّق السيرفر
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _process_batch_core(conn, limit):
     cur = conn.cursor()
 
     s = cur.execute("SELECT * FROM schedule_settings WHERE id = 1").fetchone()
@@ -2857,7 +2871,10 @@ def flush_reverse_queue(limit=None):
                     mail_flag(acct, row["folder"] or "INBOX", [row["uid"]], r"\Seen", True)
                 except Exception as exc:  # noqa: BLE001
                     log.debug("تعليم الرسالة بعد الرد: %s", exc)
-            if hi > 0 and not _stop_event.is_set():
+            # التأخير العشوائي للحماية من البلوك لازم فقط للإرسال الخارجي (IMAP/SMTP).
+            # الرد الداخلي فوري ومحلي — أي تأخير هنا بيخلّي الردود تتسحّب ببطء شديد
+            # ويعطّل الدورة. فمنأخّرش بين الردود الداخلية.
+            if (not is_internal) and hi > 0 and not _stop_event.is_set():
                 _stop_event.wait(random.uniform(lo, hi))
 
         conn.close()
@@ -2889,16 +2906,30 @@ def process_reverse_batch(limit=None):
 
 
 def reverse_tick():
-    """تُستدعى من المُجدوِل: فحص دوري + إرسال ما حان موعده في كل دورة."""
+    """تُستدعى من المُجدوِل: الفحص الداخلي الرخيص فوراً، والباقي (فحص IMAP + إرسال
+    الردود) في خيط خلفي عشان ما يعطّلش حلقة المُجدوِل ولا إرسال الحملات."""
     if get_setting("reverse_enabled", "0") != "1":
         return
-    every = max(1, _gi("reverse_scan_minutes", REVERSE_SCAN_DEFAULT)) * 60
-    now = time.time()
-    _safe_call(_scan_reverse_internal_safe)   # الفحص الداخلي رخيص — كل دورة
-    if now - _last_reverse_scan[0] >= every:
-        _last_reverse_scan[0] = now
-        _safe_call(scan_reverse_inboxes)
-    _safe_call(flush_reverse_queue)
+    _safe_call(_scan_reverse_internal_safe)   # الفحص الداخلي رخيص — كل دورة (DB فقط)
+    # فحص الصناديق الخارجية (شبكة) + إرسال الردود ممكن ياخدوا وقت → في الخلفية
+    if not _reverse_scan_lock.locked():
+        threading.Thread(target=_reverse_flush_bg, daemon=True).start()
+
+
+def _reverse_flush_bg():
+    """فحص IMAP الدوري (لو حان موعده) + إرسال الردود المستحقّة — خارج حلقة المُجدوِل.
+    مقفول بقفل خاص عشان ما تشتغلش أكتر من دورة فحص/إرسال في نفس الوقت."""
+    if not _reverse_scan_lock.acquire(blocking=False):
+        return
+    try:
+        every = max(1, _gi("reverse_scan_minutes", REVERSE_SCAN_DEFAULT)) * 60
+        now = time.time()
+        if now - _last_reverse_scan[0] >= every:
+            _last_reverse_scan[0] = now
+            _safe_call(scan_reverse_inboxes)
+        _safe_call(flush_reverse_queue)
+    finally:
+        _reverse_scan_lock.release()
 
 
 def _safe_call(fn, *args):
@@ -4746,6 +4777,47 @@ CAMPAIGNS_TPL = """
  <span class="small text-muted"><i class="bi bi-arrow-repeat"></i> تحديث تلقائي كل ٥ ثوانٍ</span>
  <span class="small text-success" id="campLive"></span>
 </div>
+
+<div id="campFeed">
+{% if feed %}
+<div class="card mb-3" style="border:1px solid #d7deea">
+ <div class="card-header py-2 d-flex align-items-center gap-2"
+      style="background:#0f6cbd;color:#fff;font-weight:700;font-size:.9rem">
+  <i class="bi bi-activity"></i> البث الحيّ — الراسل ← المستقبِل
+  <span class="badge bg-light text-primary ms-auto">{{ feed|length }}</span></div>
+ <div style="max-height:230px;overflow:auto">
+  <table class="table table-sm mb-0 align-middle" style="font-size:.8rem">
+   <tbody>
+   {% for m in feed %}
+   <tr>
+    <td class="text-nowrap" style="width:120px;color:#6b7280">
+     <i class="bi bi-clock"></i> {{ (m.ts or '')[11:19] }}</td>
+    <td class="text-nowrap">
+     {% if m.kind == 'send' %}
+      <span class="badge bg-primary">إرسال</span>
+      <b>{{ m.acc_name or m.acc_email }}</b>
+      <i class="bi bi-arrow-left text-success"></i>
+      <span>{{ m.emp_name or m.emp_email }}</span>
+     {% else %}
+      <span class="badge bg-info text-dark">رد</span>
+      <b>{{ m.emp_name or m.emp_email }}</b>
+      <i class="bi bi-arrow-left text-info"></i>
+      <span>{{ m.acc_name or m.acc_email }}</span>
+     {% endif %}
+    </td>
+    <td class="text-nowrap" style="width:60px">
+     {% if m.status == 'sent' %}<span class="text-success"><i class="bi bi-check-circle-fill"></i></span>
+     {% else %}<span class="text-danger"><i class="bi bi-x-circle-fill"></i> {{ m.status }}</span>{% endif %}
+    </td>
+   </tr>
+   {% endfor %}
+   </tbody>
+  </table>
+ </div>
+</div>
+{% endif %}
+</div>
+
 <div class="table-wrap" id="campTableWrap">
 <table class="table align-middle">
  <thead><tr><th>#</th><th>الاسم</th><th>القالب</th><th>الحالة</th>
@@ -4859,9 +4931,19 @@ function campFilter(){
    .then(function(html){
      var doc=new DOMParser().parseFromString(html,'text/html');
      var fresh=doc.getElementById('campTableWrap');
+     var changed=false;
      if(fresh && fresh.innerHTML!==wrap.innerHTML){
        wrap.innerHTML=fresh.innerHTML;
        campFilter();   // أعِد تطبيق الفلتر بعد التحديث اللحظي
+       changed=true;
+     }
+     // حدّث البث الحيّ (الراسل ← المستقبِل) كمان
+     var feed=document.getElementById('campFeed');
+     var freshFeed=doc.getElementById('campFeed');
+     if(feed && freshFeed && freshFeed.innerHTML!==feed.innerHTML){
+       feed.innerHTML=freshFeed.innerHTML; changed=true;
+     }
+     if(changed){
        var live=document.getElementById('campLive');
        if(live){ live.textContent='✓ تم التحديث'; setTimeout(function(){live.textContent='';},1500); }
      }
@@ -9718,9 +9800,34 @@ def campaigns():
     accs = conn2.execute("SELECT id, email, display_name, "
                          "(SELECT COUNT(*) FROM employees e WHERE e.owner_account_id=accounts.id "
                          " AND e.active=1) AS n_emp FROM accounts ORDER BY id").fetchall()
+    # سجل حركة حيّ: آخر الرسائل المرسلة (حساب ← موظف) وآخر الردود (موظف ← حساب)
+    feed = conn2.execute("""
+        SELECT * FROM (
+            SELECT 'send' AS kind, se.sent_at AS ts,
+                   a.display_name AS acc_name, a.email AS acc_email,
+                   e.name AS emp_name, se.to_email AS emp_email, se.status AS status
+            FROM sent_emails se
+            LEFT JOIN accounts a ON a.id = se.account_id
+            LEFT JOIN employees e ON e.id = se.employee_id
+            WHERE se.sent_at IS NOT NULL
+            ORDER BY se.sent_at DESC LIMIT 40
+        ) s
+        UNION ALL
+        SELECT * FROM (
+            SELECT 'reply' AS kind, er.replied_at AS ts,
+                   a.display_name AS acc_name, a.email AS acc_email,
+                   e.name AS emp_name, e.email AS emp_email, er.status AS status
+            FROM emp_replies er
+            LEFT JOIN employees e ON e.id = er.employee_id
+            LEFT JOIN accounts a ON lower(a.email) = lower(er.sender_account)
+            WHERE er.status='sent' AND er.replied_at IS NOT NULL
+            ORDER BY er.replied_at DESC LIMIT 40
+        ) r
+        ORDER BY ts DESC LIMIT 30
+    """).fetchall()
     conn2.close()
     return render("campaigns.html", "الحملات", rows=rows, templates=templates,
-                  departments=departments, accs=accs,
+                  departments=departments, accs=accs, feed=feed,
                   scope=request.args.get("scope", ""))
 
 
