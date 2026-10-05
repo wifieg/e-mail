@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.44"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.45"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4580,6 +4580,9 @@ MSG_TEMPLATES_TPL = """
  .mt-sent{display:inline-block;font-size:.72rem;font-weight:800;color:#fff;background:#dc2626;
    padding:2px 9px;border-radius:20px;margin-top:5px;box-shadow:0 1px 3px rgba(220,38,38,.35)}
  .mt-sent i{font-size:.72rem;margin-inline-end:2px}
+ .mt-att-badge{display:inline-flex;align-items:center;gap:3px;font-size:.7rem;font-weight:800;
+   color:#0f6cbd;background:#eaf3fc;border:1px solid #cfe0f3;padding:1px 8px;border-radius:20px;
+   margin-inline-start:6px}
  .cfg-sec{border:1px solid #e3e8f0;border-radius:10px;padding:10px 12px;margin-bottom:12px;background:#fbfcfe}
  .cfg-h{font-weight:700;color:#1f2937;font-size:.92rem;margin-bottom:3px}
  .cfg-h i{color:#0f6cbd;margin-inline-end:4px}
@@ -4640,6 +4643,9 @@ MSG_TEMPLATES_TPL = """
     {% for a in accs %}{% if a.id|string in sel %}{% set _ = snames.append(a.display_name or a.email) %}{% endif %}{% endfor %}
     {% if snames %}<i class="bi bi-send-check"></i> المرسِلون: {{ snames|join(' · ') }}{% endif %}
     {% if (t.reply_body or '').strip() %}<span style="color:#b26a00;margin-inline-start:6px"><i class="bi bi-robot"></i> له رد خاص</span>{% endif %}
+    {% set am = (tpl_atts.get(t.id) or {}).get('msg') or [] %}
+    {% set ar = (tpl_atts.get(t.id) or {}).get('reply') or [] %}
+    {% if am or ar %}<span class="mt-att-badge" title="مرفقات الرسالة {{ am|length }} / مرفقات الرد {{ ar|length }}"><i class="bi bi-paperclip"></i> {{ am|length + ar|length }}</span>{% endif %}
    </div>
    <form method="POST" action="{{ url_for('edit_template', tid=t.id) }}">
     <div class="mt-lbl">اسم القالب</div>
@@ -4791,13 +4797,27 @@ MSG_TEMPLATES_TPL = """
 </div>
 
 <div class="modal fade" id="add" tabindex="-1"><div class="modal-dialog"><div class="modal-content">
- <form method="POST" action="{{ url_for('add_template') }}">
+ <form method="POST" action="{{ url_for('add_template') }}" enctype="multipart/form-data">
   <div class="modal-header"><h5 class="modal-title">قالب رسالة جديد</h5>
    <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
   <div class="modal-body">
    <div class="mb-2"><label>اسم القالب</label><input name="name" class="form-control" required></div>
-   <div class="mb-2"><label>نص الرسالة</label><textarea name="body" class="form-control" rows="6" required></textarea></div>
-   <div class="form-text">موضوع الإيميل = اسم القالب، والتوقيع يُضاف تلقائياً حسب الحساب المرسِل.</div>
+   <div class="cfg-sec">
+    <div class="cfg-h"><i class="bi bi-envelope-arrow-up text-success"></i> نص الرسالة (اللي هيبعت)</div>
+    <textarea name="body" class="form-control" rows="5" required></textarea>
+    <div class="cfg-h mt-2"><i class="bi bi-paperclip"></i> مرفقات الرسالة</div>
+    <input type="file" name="att_msg" class="form-control form-control-sm" multiple>
+   </div>
+   <div class="cfg-sec">
+    <div class="cfg-h"><i class="bi bi-reply-fill text-primary"></i> رد الحساب التلقائي (اللي هيستلم)</div>
+    <div class="cfg-note">اختياري — لما الموظف يستلم الرسالة، صندوقه يرد بالنص ده.</div>
+    <textarea name="reply_body" class="form-control" rows="4"
+     placeholder="شكراً على رسالتكم، تم الاطلاع وسيتم الرد قريباً."></textarea>
+    <div class="cfg-h mt-2"><i class="bi bi-paperclip"></i> مرفقات الرد</div>
+    <input type="file" name="att_reply" class="form-control form-control-sm" multiple>
+   </div>
+   <div class="form-text">موضوع الإيميل = اسم القالب، والتوقيع يُضاف تلقائياً حسب الحساب المرسِل.
+    وتقدر تحدّد المرسِلين لاحقاً من «إرسال/استقبال».</div>
   </div>
   <div class="modal-footer"><button class="btn btn-primary">حفظ</button></div>
  </form>
@@ -9826,13 +9846,23 @@ def save_account_signature(aid):
 def add_template():
     f = request.form
     name = f["name"].strip()
+    reply_body = f.get("reply_body", "")
     # موضوع الإيميل = اسم القالب، والتوقيع يُضاف تلقائياً حسب الحساب المرسِل
     conn = get_connection()
-    conn.execute("INSERT INTO templates (name, subject, body, signature) VALUES (?, ?, ?, '')",
-                 (name, name, f["body"]))
+    cur = conn.cursor()
+    cur.execute("INSERT INTO templates (name, subject, body, signature, reply_body) "
+                "VALUES (?, ?, ?, '', ?)", (name, name, f["body"], reply_body))
+    tid = cur.lastrowid
+    n1, e1 = _save_tpl_attachments(conn, "camp", tid, "msg", request.files.getlist("att_msg"))
+    n2, e2 = _save_tpl_attachments(conn, "camp", tid, "reply", request.files.getlist("att_reply"))
     conn.commit()
     conn.close()
-    flash("تم حفظ القالب", "success")
+    msg = "تم حفظ القالب"
+    if n1 or n2:
+        msg += " مع %d مرفق" % (n1 + n2)
+    if e1 or e2:
+        flash("بعض المرفقات لم تُضف: " + " · ".join(e1 + e2), "error")
+    flash(msg, "success")
     return redirect(url_for("message_templates_page"))
 
 
