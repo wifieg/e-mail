@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.54"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.56"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -1252,11 +1252,12 @@ def internal_deliver(from_email, from_name, to_email, subject, body_html,
            else datetime.now().isoformat(timespec="seconds"))
     repl = 1 if mark_replied else 0
     try:
-        # نسخة المستقبِل (وارد)
+        # نسخة المستقبِل (وارد) — تُسلَّم كأنها مقروءة (is_read=1)
         conn.execute(
             """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
-                   to_email, subject, body, msg_id, in_reply_to, created_at, campaign_id, is_replied)
-               VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   to_email, subject, body, msg_id, in_reply_to, created_at, campaign_id,
+                   is_replied, is_read)
+               VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)""",
             (to_email.lower(), from_email.lower(), from_name or "", to_email.lower(),
              subject, body_html, msg_id, in_reply_to, now, campaign_id, repl))
         # نسخة المرسِل (مُرسَل)
@@ -1308,8 +1309,9 @@ def internal_deliver_cc(from_email, from_name, to_email, cc_list, subject, body_
         for em in cc_list:
             conn.execute(
                 """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
-                       to_email, cc_emails, subject, body, msg_id, in_reply_to, created_at, is_replied)
-                   VALUES (?, 'inbox', ?, ?, ?, '', ?, ?, ?, NULL, ?, ?)""",
+                       to_email, cc_emails, subject, body, msg_id, in_reply_to, created_at,
+                       is_replied, is_read)
+                   VALUES (?, 'inbox', ?, ?, ?, '', ?, ?, ?, NULL, ?, ?, 1)""",
                 (em.lower(), from_email.lower(), from_name or "", em.lower(),
                  subject, body_html, msg_id, now, repl))
         for aid in (attachment_ids or []):
@@ -4745,7 +4747,8 @@ MSG_TEMPLATES_TPL = """
      </div>
      <div class="modal-footer justify-content-between">
       <a class="btn btn-outline-danger" href="{{ url_for('delete_template', tid=t.id) }}"
-         onclick="return confirm('حذف القالب؟')"><i class="bi bi-trash"></i> حذف</a>
+         onclick="return confirm('⚠️ تحذير — حذف القالب «{{ t.name }}» نهائيًا!\\n\\nهيتمسح معاه:\\n• كل الرسائل المبعوتة منه لكل الموظفين (الإرسال).\\n• كل الردود اللي رجعت للحساب الرئيسي (الاستقبال).\\n• سجل الإرسال والمرفقات والحملات المرتبطة بيه.\\n\\n❌ العملية دي لا يمكن التراجع عنها.\\n✅ بياخد نسخة أمان تلقائية قبل الحذف (تقدر تسترجعها من النسخ الاحتياطي).\\n\\nمتأكد إنك عايز تمسح القالب وكل رسائله؟')">
+       <i class="bi bi-trash"></i> حذف القالب وكل رسائله</a>
       <button class="btn btn-primary"><i class="bi bi-check-lg"></i> حفظ</button>
      </div>
     </form>
@@ -10079,13 +10082,86 @@ def edit_template(tid):
     return redirect(url_for("message_templates_page"))
 
 
+def _chunks(seq, n):
+    seq = list(seq)
+    for i in range(0, len(seq), n):
+        yield seq[i:i + n]
+
+
+def _del_in(cur, table, col, values):
+    """حذف صفوف حيث col ضمن قائمة قيم (على دفعات لتفادي قوائم IN الضخمة)."""
+    vals = [v for v in values if v is not None]
+    for ch in _chunks(vals, 400):
+        if not ch:
+            continue
+        ph = ",".join("?" * len(ch))
+        try:
+            cur.execute(f"DELETE FROM {table} WHERE {col} IN ({ph})", ch)
+        except Exception:  # noqa: BLE001
+            log.exception("del_in %s", table)
+
+
 @app.route("/templates/<int:tid>/delete")
 def delete_template(tid):
+    """حذف القالب + كل رسائله المبعوتة للموظفين والردود عليها (إرسال واستقبال)."""
     conn = get_connection()
-    conn.execute("DELETE FROM templates WHERE id=?", (tid,))
+    cur = conn.cursor()
+    row = cur.execute("SELECT name FROM templates WHERE id=?", (tid,)).fetchone()
+    if not row:
+        conn.close()
+        abort(404)
+    tplname = row["name"]
+    # نسخة أمان قبل الحذف الشامل
+    try:
+        create_backup()
+    except Exception:  # noqa: BLE001
+        log.exception("safety backup before delete-template failed")
+    camp_ids = [r["id"] for r in cur.execute(
+        "SELECT id FROM campaigns WHERE template_id=?", (tid,)).fetchall()]
+    # 1) معرّفات الرسائل الأصلية: رسائل الحملات + رسائل التعميم (campaign_id فارغ، نفس الاسم)
+    orig = set()
+    for ch in _chunks(camp_ids, 400):
+        if not ch:
+            continue
+        ph = ",".join("?" * len(ch))
+        for r in cur.execute(
+                f"SELECT DISTINCT msg_id FROM mail_messages WHERE campaign_id IN ({ph}) "
+                "AND msg_id IS NOT NULL", ch).fetchall():
+            orig.add(r["msg_id"])
+    for r in cur.execute(
+            "SELECT DISTINCT msg_id FROM mail_messages WHERE campaign_id IS NULL "
+            "AND subject=? AND msg_id IS NOT NULL", (tplname,)).fetchall():
+        orig.add(r["msg_id"])
+    # 2) معرّفات الردود (الاستقبال) على الرسائل الأصلية
+    replies = set()
+    for ch in _chunks(list(orig), 400):
+        if not ch:
+            continue
+        ph = ",".join("?" * len(ch))
+        for r in cur.execute(
+                f"SELECT DISTINCT msg_id FROM mail_messages WHERE in_reply_to IN ({ph}) "
+                "AND msg_id IS NOT NULL", ch).fetchall():
+            replies.add(r["msg_id"])
+    all_mids = orig | replies
+    # 3) احذف المرفقات المربوطة بكل الرسائل دي
+    _del_in(cur, "msg_attachments", "msg_id", all_mids)
+    # 4) احذف من طابور الرد العكسي + سجل الردود (الاستقبال)
+    _del_in(cur, "reverse_queue", "msgid", orig)
+    _del_in(cur, "emp_replies", "in_reply_to", orig)
+    # 5) احذف الرسائل نفسها (إرسال + استقبال، كل النسخ عبر msg_id)
+    _del_in(cur, "mail_messages", "msg_id", all_mids)
+    # 6) احذف سجل الإرسال (حملات + تعميم)
+    _del_in(cur, "sent_emails", "campaign_id", camp_ids)
+    cur.execute("DELETE FROM sent_emails WHERE campaign_id IS NULL AND subject=?", (tplname,))
+    # 7) مرفقات القالب + سجل مرّات الإرسال
+    cur.execute("DELETE FROM tpl_attachments WHERE template_kind='camp' AND template_id=?", (tid,))
+    cur.execute("DELETE FROM tpl_send_log WHERE template_id=?", (tid,))
+    # 8) احذف القالب نفسه (يحذف حملاته ومستلميها تلقائياً عبر ON DELETE CASCADE)
+    cur.execute("DELETE FROM templates WHERE id=?", (tid,))
     conn.commit()
     conn.close()
-    flash("تم حذف القالب", "info")
+    flash("تم حذف القالب وكل رسائله المبعوتة للموظفين والردود عليها. "
+          "(أُخذت نسخة أمان قبل الحذف.)", "info")
     return redirect(url_for("message_templates_page"))
 
 
