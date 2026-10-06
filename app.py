@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.58"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.59"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -770,6 +770,8 @@ def init_db():
         cur.execute("ALTER TABLE templates ADD COLUMN reply_body TEXT NOT NULL DEFAULT ''")
     if "no_reply" not in tpl_cols:
         cur.execute("ALTER TABLE templates ADD COLUMN no_reply INTEGER NOT NULL DEFAULT 0")
+    if "archived" not in tpl_cols:
+        cur.execute("ALTER TABLE templates ADD COLUMN archived INTEGER NOT NULL DEFAULT 0")
 
     # الرسائل صارت تُقرأ حيّاً من السيرفر — لم يعد هناك تخزين محلي لها
     cur.execute("DROP INDEX IF EXISTS idx_inbox_msgid")
@@ -4648,6 +4650,16 @@ MSG_TEMPLATES_TPL = """
    color:#b26a00;font-size:.7rem;font-weight:800;padding:3px 10px;border-radius:20px;
    text-decoration:none;white-space:nowrap}
  .mt-resend:hover{background:#ffe6cc}
+ .mt-arch{display:inline-flex;align-items:center;gap:3px;background:#f2f4f8;border:1px solid #d5dae4;
+   color:#5a6472;font-size:.7rem;font-weight:700;padding:3px 10px;border-radius:20px;
+   text-decoration:none;white-space:nowrap}
+ .mt-arch:hover{background:#e6eaf1;color:#334}
+ .mt-tabs{display:flex;gap:6px}
+ .mt-tab{display:inline-flex;align-items:center;gap:5px;font-size:.8rem;font-weight:700;
+   padding:5px 12px;border-radius:8px;text-decoration:none;color:#5a6472;border:1px solid #d5dae4;
+   background:#fff}
+ .mt-tab:hover{background:#f2f6fb}
+ .mt-tab.on{background:#0f6cbd;color:#fff;border-color:#0f6cbd}
  .mt-senders{font-size:.7rem;color:#0a7d33;margin-top:4px;min-height:1em}
  .mt-senders i{font-size:.72rem}
  .mt-sent{display:inline-block;font-size:.72rem;font-weight:800;color:#fff;background:#dc2626;
@@ -4690,6 +4702,14 @@ MSG_TEMPLATES_TPL = """
  <div class="mt-bar">
   <button class="mt-add" data-bs-toggle="modal" data-bs-target="#add">
    <i class="bi bi-plus-circle"></i> قالب رسالة جديد</button>
+  <div class="mt-tabs">
+   <a class="mt-tab {{ 'on' if view != 'archived' else '' }}"
+      href="{{ url_for('message_templates_page', view='active') }}">
+    <i class="bi bi-collection"></i> القوالب ({{ active_count }})</a>
+   <a class="mt-tab {{ 'on' if view == 'archived' else '' }}"
+      href="{{ url_for('message_templates_page', view='archived') }}">
+    <i class="bi bi-archive"></i> الأرشيف ({{ archived_count }})</a>
+  </div>
   <div class="mt-filter">
    <i class="bi bi-funnel-fill"></i>
    <label class="small text-muted">فلتر بالمرسِل:</label>
@@ -4723,6 +4743,10 @@ MSG_TEMPLATES_TPL = """
        title="إعادة إرسال نفس التعميم من نفس الحساب اللي اتبعت منه — بتاريخ اليوم"
        onclick="return confirm('إعادة إرسال «{{ t.name }}» من نفس الحساب اللي اتبعت منه آخر مرة، لكل المستلمين، بتاريخ النهاردة؟')">
      <i class="bi bi-arrow-repeat"></i> إعادة إرسال</a>
+    <a class="mt-arch" href="{{ url_for('template_archive', tid=t.id) }}"
+       title="{{ 'استرجاع القالب من الأرشيف' if t.archived else 'أرشفة القالب (يختفي من القائمة)' }}">
+     {% if t.archived %}<i class="bi bi-box-arrow-up"></i> استرجاع
+     {% else %}<i class="bi bi-archive"></i> أرشفة{% endif %}</a>
     <a class="mt-reply-toggle {{ 'off' if t.no_reply else 'on' }}"
        href="{{ url_for('template_toggle_reply', tid=t.id) }}"
        title="اضغط للتبديل بين رد الموظفين وبدون رد">
@@ -9989,7 +10013,14 @@ def save_employee_signature(eid):
 @app.route("/message-templates")
 def message_templates_page():
     conn = get_connection()
-    rows = conn.execute("SELECT * FROM templates ORDER BY id DESC").fetchall()
+    view = request.args.get("view", "active")
+    arch = 1 if view == "archived" else 0
+    rows = conn.execute("SELECT * FROM templates WHERE COALESCE(archived,0)=? "
+                        "ORDER BY id DESC", (arch,)).fetchall()
+    archived_count = conn.execute(
+        "SELECT COUNT(*) c FROM templates WHERE COALESCE(archived,0)=1").fetchone()["c"]
+    active_count = conn.execute(
+        "SELECT COUNT(*) c FROM templates WHERE COALESCE(archived,0)=0").fetchone()["c"]
     # كام *مرة* اتبعت كل قالب (عدد عمليات الإرسال: حملة = مرة، CC = مرة) — مش عدد الموظفين
     sent_counts = {}
     for r in conn.execute(
@@ -10015,7 +10046,26 @@ def message_templates_page():
     conn.close()
     today = datetime.now().strftime("%Y-%m-%d")
     return render("msg_templates.html", "القوالب والردود التلقائية", rows=rows,
-                  sent_counts=sent_counts, tpl_atts=tpl_atts, today=today, **rctx)
+                  sent_counts=sent_counts, tpl_atts=tpl_atts, today=today,
+                  view=view, archived_count=archived_count, active_count=active_count, **rctx)
+
+
+@app.route("/templates/<int:tid>/archive")
+def template_archive(tid):
+    """أرشفة/استرجاع القالب — الأرشفة بتخفيه من القائمة الرئيسية بدون حذف."""
+    conn = get_connection()
+    t = conn.execute("SELECT archived FROM templates WHERE id=?", (tid,)).fetchone()
+    if not t:
+        conn.close()
+        abort(404)
+    newv = 0 if t["archived"] else 1
+    conn.execute("UPDATE templates SET archived=? WHERE id=?", (newv, tid))
+    conn.commit()
+    conn.close()
+    flash("تم أرشفة القالب (اتخفى من القائمة)." if newv
+          else "تم استرجاع القالب من الأرشيف.", "success")
+    return redirect(url_for("message_templates_page",
+                            view="archived" if newv else "active"))
 
 
 @app.route("/templates/signature", methods=["POST"])
