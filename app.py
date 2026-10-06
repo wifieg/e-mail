@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.49"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.50"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -768,6 +768,8 @@ def init_db():
         cur.execute("ALTER TABLE templates ADD COLUMN send_accounts TEXT NOT NULL DEFAULT ''")
     if "reply_body" not in tpl_cols:
         cur.execute("ALTER TABLE templates ADD COLUMN reply_body TEXT NOT NULL DEFAULT ''")
+    if "no_reply" not in tpl_cols:
+        cur.execute("ALTER TABLE templates ADD COLUMN no_reply INTEGER NOT NULL DEFAULT 0")
 
     # الرسائل صارت تُقرأ حيّاً من السيرفر — لم يعد هناك تخزين محلي لها
     cur.execute("DROP INDEX IF EXISTS idx_inbox_msgid")
@@ -1236,24 +1238,27 @@ def _rich_signature_html(entity, logo=""):
 
 def internal_deliver(from_email, from_name, to_email, subject, body_html,
                      in_reply_to=None, conn=None, date_override=None, campaign_id=None,
-                     attachment_ids=None):
+                     attachment_ids=None, mark_replied=False):
     """يسلّم رسالة داخلياً: نسخة inbox للمستقبِل + نسخة sent للمرسِل.
     body_html = نص HTML جاهز (بالتوقيع). attachment_ids = قائمة معرّفات مرفقات
-    القالب تُربَط بالرسالة (تظهر وتتنزّل في البريد). يعيد (نجاح, msg_id)."""
+    القالب تُربَط بالرسالة (تظهر وتتنزّل في البريد). mark_replied=True يعلّم نسخة
+    الوارد كأنها مردود عليها فمحرّك الرد العكسي ما يخلّيش الموظف يرد (وضع «بدون رد»).
+    يعيد (نجاح, msg_id)."""
     own = conn is None
     if own:
         conn = get_connection()
     msg_id = make_msgid(domain="internal.local")
     now = (date_override.isoformat(timespec="seconds") if date_override
            else datetime.now().isoformat(timespec="seconds"))
+    repl = 1 if mark_replied else 0
     try:
         # نسخة المستقبِل (وارد)
         conn.execute(
             """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
-                   to_email, subject, body, msg_id, in_reply_to, created_at, campaign_id)
-               VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   to_email, subject, body, msg_id, in_reply_to, created_at, campaign_id, is_replied)
+               VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (to_email.lower(), from_email.lower(), from_name or "", to_email.lower(),
-             subject, body_html, msg_id, in_reply_to, now, campaign_id))
+             subject, body_html, msg_id, in_reply_to, now, campaign_id, repl))
         # نسخة المرسِل (مُرسَل)
         conn.execute(
             """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
@@ -2527,7 +2532,7 @@ def _process_batch_core(conn, limit):
     rows = cur.execute(f"""
         SELECT r.id AS rid, r.campaign_id, r.employee_id, e.owner_account_id,
                e.name, e.email, e.title, e.department, e.phone, e.signature,
-               t.id AS tpl_id, t.subject, t.body, t.signature AS tpl_signature,
+               t.id AS tpl_id, t.subject, t.body, t.signature AS tpl_signature, t.no_reply,
                c.send_date AS c_send_date, c.send_time AS c_send_time
         FROM campaign_recipients r
         JOIN campaigns c ON c.id = r.campaign_id
@@ -2630,10 +2635,11 @@ def _process_batch_core(conn, limit):
                 html += "<br><br>" + sig_html
             _att_ids = _tpl_att_ids(cur, "camp",
                                     row["tpl_id"] if "tpl_id" in row.keys() else None, "msg")
+            _no_reply = bool(row["no_reply"]) if "no_reply" in row.keys() else False
             ok, message = internal_deliver(
                 account["email"], account["display_name"] or "", row["email"], subject, html,
                 date_override=campaign_date, campaign_id=row["campaign_id"],
-                attachment_ids=_att_ids)
+                attachment_ids=_att_ids, mark_replied=_no_reply)
         else:
             ok, message = send_email(account, row["email"], subject, full_body,
                                      save_to_sent=cfg["save_to_sent"])
@@ -4640,6 +4646,12 @@ MSG_TEMPLATES_TPL = """
  .mt-att-badge{display:inline-flex;align-items:center;gap:3px;font-size:.7rem;font-weight:800;
    color:#0f6cbd;background:#eaf3fc;border:1px solid #cfe0f3;padding:1px 8px;border-radius:20px;
    margin-inline-start:6px}
+ .mt-reply-toggle{display:inline-flex;align-items:center;gap:4px;font-size:.72rem;font-weight:700;
+   padding:2px 10px;border-radius:20px;margin-top:5px;text-decoration:none;border:1px solid}
+ .mt-reply-toggle.on{color:#0a7d33;background:#e9f9ef;border-color:#b6e3c6}
+ .mt-reply-toggle.on:hover{background:#d7f3e1}
+ .mt-reply-toggle.off{color:#8a6d00;background:#fff8e6;border-color:#f0d98a}
+ .mt-reply-toggle.off:hover{background:#fdeec2}
  .cfg-sec{border:1px solid #e3e8f0;border-radius:10px;padding:10px 12px;margin-bottom:12px;background:#fbfcfe}
  .cfg-h{font-weight:700;color:#1f2937;font-size:.92rem;margin-bottom:3px}
  .cfg-h i{color:#0f6cbd;margin-inline-end:4px}
@@ -4692,6 +4704,11 @@ MSG_TEMPLATES_TPL = """
     <button type="button" class="mt-send-btn" data-bs-toggle="modal" data-bs-target="#snd{{ t.id }}">
      <i class="bi bi-send-fill"></i> إرسال</button>
    </div>
+   <a class="mt-reply-toggle {{ 'off' if t.no_reply else 'on' }}"
+      href="{{ url_for('template_toggle_reply', tid=t.id) }}"
+      title="اضغط للتبديل بين رد الموظفين وبدون رد">
+    {% if t.no_reply %}<i class="bi bi-bell-slash-fill"></i> بدون رد (استلام فقط)
+    {% else %}<i class="bi bi-chat-dots-fill"></i> رد الموظفين: مُفعّل{% endif %}</a>
    {% if sent_counts.get(t.id) %}
    <div class="mt-sent"><i class="bi bi-send-fill"></i> اتبعت {{ sent_counts.get(t.id) }} مرة</div>
    {% endif %}
@@ -10051,6 +10068,23 @@ def delete_template(tid):
     return redirect(url_for("message_templates_page"))
 
 
+@app.route("/templates/<int:tid>/toggle-reply")
+def template_toggle_reply(tid):
+    """تبديل «رد الموظفين»: لو مفعّل، الموظف يستلم الرسالة بس ما يردّش عليها."""
+    conn = get_connection()
+    t = conn.execute("SELECT no_reply FROM templates WHERE id=?", (tid,)).fetchone()
+    if not t:
+        conn.close()
+        abort(404)
+    newv = 0 if t["no_reply"] else 1
+    conn.execute("UPDATE templates SET no_reply=? WHERE id=?", (newv, tid))
+    conn.commit()
+    conn.close()
+    flash("تم ضبط القالب على «بدون رد» — الموظفون يستلموا بس وما يردّوش."
+          if newv else "تم تفعيل رد الموظفين التلقائي على القالب.", "success")
+    return redirect(url_for("message_templates_page"))
+
+
 @app.route("/templates/<int:tid>/config", methods=["POST"])
 def template_config(tid):
     """إعداد القالب: الحسابات المرسِلة له + رد الموظفين التلقائي عليه (إرسال + استقبال)."""
@@ -12039,7 +12073,8 @@ def _int_msgs(box_email, folder_db):
     conn = get_connection()
     try:
         rows = conn.execute(
-            "SELECT * FROM mail_messages WHERE box_email=? AND folder=? ORDER BY id ASC",
+            "SELECT * FROM mail_messages WHERE box_email=? AND folder=? "
+            "ORDER BY created_at ASC, id ASC",
             (box_email.lower(), folder_db)).fetchall()
     finally:
         conn.close()
