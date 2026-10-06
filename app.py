@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.46"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.48"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -1278,9 +1278,10 @@ def internal_deliver(from_email, from_name, to_email, subject, body_html,
 def internal_deliver_cc(from_email, from_name, to_email, cc_list, subject, body_html,
                         conn=None, date_override=None, attachment_ids=None,
                         mark_replied=True):
-    """إيميل واحد زي الأوتلوك: نسخة sent للمرسِل + نسخة inbox لكل مستلِم في CC،
-    وكلهم بيشوفوا نفس الـ To/Cc. يعيد (نجاح, msg_id). mark_replied=True يمنع
-    الرد العكسي التلقائي على البث (عشان ميتسبّش طوفان ردود)."""
+    """إيميل واحد (إرسال واحد) لكن بصيغة Bcc: المستلمون مخفيون عن بعض —
+    كل موظف يشوف الرسالة كأنها مبعوتة ليه هو بس (To = نفسه، بدون Cc).
+    نسخة الصادر عند المرسِل بتحتفظ بقائمة المستلمين (للرجوع). يعيد (نجاح, msg_id).
+    mark_replied=True يمنع الرد العكسي التلقائي على البث."""
     own = conn is None
     if own:
         conn = get_connection()
@@ -1290,21 +1291,21 @@ def internal_deliver_cc(from_email, from_name, to_email, cc_list, subject, body_
     cc_join = ", ".join(cc_list)
     repl = 1 if mark_replied else 0
     try:
-        # نسخة المرسِل (مُرسَل)
+        # نسخة المرسِل (مُرسَل) — بتحتفظ بقائمة المستلمين عشان المرسِل يعرف راحت لمين
         conn.execute(
             """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
                    to_email, cc_emails, subject, body, msg_id, in_reply_to, created_at, is_replied)
                VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1)""",
-            (from_email.lower(), from_email.lower(), from_name or "", to_email.lower(),
+            (from_email.lower(), from_email.lower(), from_name or "", from_email.lower(),
              cc_join, subject, body_html, msg_id, now))
-        # نسخة inbox لكل موظف في CC
+        # نسخة inbox لكل موظف — Bcc: يشوف نفسه فقط (بدون باقي المستلمين)
         for em in cc_list:
             conn.execute(
                 """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
                        to_email, cc_emails, subject, body, msg_id, in_reply_to, created_at, is_replied)
-                   VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
-                (em.lower(), from_email.lower(), from_name or "", to_email.lower(),
-                 cc_join, subject, body_html, msg_id, now, repl))
+                   VALUES (?, 'inbox', ?, ?, ?, '', ?, ?, ?, NULL, ?, ?)""",
+                (em.lower(), from_email.lower(), from_name or "", em.lower(),
+                 subject, body_html, msg_id, now, repl))
         for aid in (attachment_ids or []):
             conn.execute("INSERT INTO msg_attachments (msg_id, tpl_att_id) VALUES (?, ?)",
                          (msg_id, aid))
@@ -4809,14 +4810,15 @@ MSG_TEMPLATES_TPL = """
         <input name="reply_time" type="time" class="form-control sndTime" value="12:00" required></div>
       </div>
       <div class="form-text"><i class="bi bi-info-circle"></i> <b>أنشئ وأرسل:</b> إيميل منفصل
-       لكل موظف (مشخصن + ردود تلقائية). &nbsp;|&nbsp; <b>إيميل واحد (CC):</b> إيميل واحد زي
-       الأوتلوك وكل الموظفين في CC (بدون ردود تلقائية، وبيحتسب «مرة» واحدة).</div>
+       لكل موظف (مشخصن + ردود تلقائية). &nbsp;|&nbsp; <b>إيميل واحد (مخفي):</b> إرسال واحد،
+       وكل موظف يشوفه كأنه مبعوت ليه هو بس (مستلمون مخفيون Bcc، بدون ردود تلقائية،
+       وبيحتسب «مرة» واحدة).</div>
      </div>
      <div class="modal-footer">
       <button class="btn btn-primary"><i class="bi bi-rocket-takeoff"></i> أنشئ وأرسل</button>
       <button class="btn btn-success" formnovalidate
         formaction="{{ url_for('template_send_cc', tid=t.id) }}">
-       <i class="bi bi-people-fill"></i> إيميل واحد (CC)</button></div>
+       <i class="bi bi-eye-slash"></i> إيميل واحد (مخفي)</button></div>
     </form>
    </div></div></div>
  {% endfor %}
@@ -7932,6 +7934,19 @@ BACKUPS_TPL = """
     <button class="btn btn-warning btn-sm"><i class="bi bi-magic"></i> إزالة التكرار الآن</button>
    </div>
   </form>
+  <hr>
+  <div class="small text-muted mb-2"><b>إخفاء المستلمين (Bcc):</b> أي طلب قديم مبعوت من
+   <b>الحساب الرئيسي للموظفين</b> يبقى كل موظف يشوفه <b>كأنه مبعوت ليه هو بس</b> (مش شايف
+   باقي زمايله)، ونسخة صادرة واحدة لكل حملة عند الحساب. <b>ردود الموظفين تفضل زي ما هي</b>.
+   فيه نسخة أمان.</div>
+  <form method="post" action="{{ url_for('convert_old_to_cc') }}"
+        onsubmit="return confirm('تخلّي كل موظف يشوف الطلب كأنه ليه هو بس (مستلمون مخفيون)؟ (الردود مش هتتغير، وفيه نسخة أمان).');">
+   <div class="d-flex gap-2 align-items-center flex-wrap">
+    <input name="confirm" class="form-control form-control-sm" style="max-width:220px"
+       placeholder="اكتب: تحويل" autocomplete="off" required>
+    <button class="btn btn-info btn-sm"><i class="bi bi-eye-slash"></i> إخفاء المستلمين الآن</button>
+   </div>
+  </form>
  </div>
 </div>
 <script>
@@ -8890,6 +8905,60 @@ def dedup_mail_data():
     conn.close()
     flash("تم التنظيف: حُذفت الرسائل/الردود المكررة (أُبقيت رسالة ورد واحد لكل موظف). "
           "أُخذت نسخة أمان قبل التنظيف.", "success")
+    return redirect(url_for("backups_page"))
+
+
+@app.route("/backups/convert-cc", methods=["POST"])
+def convert_old_to_cc():
+    """تحويل رسائل الحملات (الرئيسي ← الموظفين) لصيغة إيميل واحد بمستلمين مخفيين (Bcc):
+    كل موظف يشوف الرسالة كأنها مبعوتة ليه هو بس (مش شايف باقي زمايله)، وتبقى
+    نسخة صادرة واحدة لكل حملة عند الحساب فيها قائمة المستلمين. لا تمسّ ردود الموظفين."""
+    if (request.form.get("confirm", "") or "").strip() != "تحويل":
+        flash("لم يتم التحويل — اكتب كلمة التأكيد «تحويل» بالضبط.", "error")
+        return redirect(url_for("backups_page"))
+    try:
+        create_backup()
+    except Exception:  # noqa: BLE001
+        log.exception("safety backup before convert-cc failed")
+    conn = get_connection()
+    cur = conn.cursor()
+    n_camps = 0
+    try:
+        camps = cur.execute(
+            "SELECT DISTINCT campaign_id FROM mail_messages "
+            "WHERE campaign_id IS NOT NULL").fetchall()
+        for c in camps:
+            cid = c["campaign_id"]
+            recs = [r["be"] for r in cur.execute(
+                "SELECT DISTINCT lower(box_email) be FROM mail_messages "
+                "WHERE campaign_id=? AND folder='inbox'", (cid,)).fetchall()]
+            if not recs:
+                continue
+            cc = ", ".join(sorted(recs))
+            # نسخة الصادر عند الحساب: To = الحساب، وقائمة المستلمين للرجوع فقط
+            cur.execute("UPDATE mail_messages SET cc_emails=?, to_email=from_email "
+                        "WHERE campaign_id=? AND folder='sent'", (cc, cid))
+            n_camps += 1
+        # اجمع نسخ الصادر المكررة في نسخة واحدة لكل حملة (إيميل واحد)
+        cur.execute("""DELETE FROM mail_messages
+                       WHERE campaign_id IS NOT NULL AND folder='sent' AND id NOT IN (
+                         SELECT MIN(id) FROM mail_messages
+                         WHERE campaign_id IS NOT NULL AND folder='sent'
+                         GROUP BY box_email, campaign_id)""")
+        # الأهم: كل نسخة واردة لموظف تبقى «ليه هو بس» — نشيل أي قائمة مستلمين ظاهرة
+        # (سواء من تحويل قديم بالـ Cc أو من إرسال Cc)، ونخلي To = الموظف نفسه.
+        cur.execute("UPDATE mail_messages SET to_email=box_email, cc_emails='' "
+                    "WHERE folder='inbox' AND cc_emails<>''")
+        conn.commit()
+    except Exception:  # noqa: BLE001
+        log.exception("convert-cc failed")
+        flash("حصل خطأ أثناء التحويل — راجع السجل (النسخة الاحتياطية اتاخدت قبلها).", "error")
+        conn.close()
+        return redirect(url_for("backups_page"))
+    conn.close()
+    flash("تم التحويل: كل موظف دلوقتي يشوف الطلب كأنه مبعوت ليه هو بس (مستلمون مخفيون)، "
+          "ونسخة صادرة واحدة لكل حملة. ردود الموظفين فضلت فردية زي ما هي. "
+          "أُخذت نسخة أمان قبل التحويل.", "success")
     return redirect(url_for("backups_page"))
 
 
