@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.51"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.53"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4827,10 +4827,15 @@ MSG_TEMPLATES_TPL = """
          <i class="bi bi-clock-history"></i> ساعة الرد</label>
         <input name="reply_time" type="time" class="form-control sndTime" value="12:00" required></div>
       </div>
+      <label class="small d-flex align-items-center gap-2 mb-2"
+             style="background:#fff8e6;border:1px solid #f0d98a;border-radius:7px;padding:6px 10px">
+       <input type="checkbox" name="missing_only" value="1">
+       <span><i class="bi bi-person-dash"></i> ابعت للي ما وصلهمش بس
+        (يتخطّى اللي استلموا القالب ده قبل كده — مفيد للتعميم)</span></label>
       <div class="form-text"><i class="bi bi-info-circle"></i> <b>أنشئ وأرسل:</b> إيميل منفصل
-       لكل موظف (مشخصن + ردود تلقائية). &nbsp;|&nbsp; <b>إيميل واحد (مخفي):</b> إرسال واحد،
-       وكل موظف يشوفه كأنه مبعوت ليه هو بس (مستلمون مخفيون Bcc، بدون ردود تلقائية،
-       وبيحتسب «مرة» واحدة).</div>
+       لكل موظف (مشخصن + ردود تلقائية). &nbsp;|&nbsp; <b>إيميل واحد (مخفي):</b> إرسال واحد
+       لكل الإيميلات (الموظفين + الحسابات الرئيسية لو الحساب «تعميم»)، وكل واحد يشوفه كأنه
+       ليه هو بس (مخفي Bcc، بدون ردود تلقائية).</div>
      </div>
      <div class="modal-footer">
       <button class="btn btn-primary"><i class="bi bi-rocket-takeoff"></i> أنشئ وأرسل</button>
@@ -10131,6 +10136,7 @@ def template_send_cc(tid):
     scope_acc = (f.get("scope_account") or "").strip()
     send_date = (f.get("send_date", "") or "").strip()
     send_time = (f.get("send_time", "") or "12:00").strip() or "12:00"
+    missing_only = bool(f.get("missing_only"))
     conn = get_connection()
     tpl = conn.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()
     if not tpl:
@@ -10151,8 +10157,9 @@ def template_send_cc(tid):
     stamp = (send_dt.isoformat(timespec="seconds") if send_dt
              else datetime.now().isoformat(timespec="seconds"))
     for acc in accounts:
-        # حساب التعميم (INFO) يبعت لكل الموظفين؛ غيره يبعت لموظفيه فقط
-        if "is_broadcast" in acc.keys() and acc["is_broadcast"]:
+        is_bc = ("is_broadcast" in acc.keys() and acc["is_broadcast"])
+        if is_bc:
+            # حساب التعميم (INFO) يبعت لكل الإيميلات: الموظفين (فرعي) + الحسابات الرئيسية
             emps = conn.execute(
                 "SELECT id, email FROM employees WHERE active=1 "
                 "AND owner_account_id IS NOT NULL").fetchall()
@@ -10162,6 +10169,23 @@ def template_send_cc(tid):
                 (acc["id"],)).fetchall()
         recips = [(e["id"], e["email"]) for e in emps
                   if _email_domain_internal(conn, e["email"])]
+        if is_bc:
+            # أضف الحسابات الرئيسية (عدا الحساب المرسِل نفسه) للتعميم
+            seen = {em.lower() for _, em in recips}
+            others = conn.execute(
+                "SELECT email FROM accounts WHERE active=1 AND id<>?", (acc["id"],)).fetchall()
+            for a2 in others:
+                em = a2["email"]
+                if em and em.lower() not in seen and _email_domain_internal(conn, em):
+                    recips.append((None, em))
+                    seen.add(em.lower())
+        # «ابعت للي ما وصلهمش بس»: نشيل اللي عندهم نسخة من القالب ده من نفس المرسِل
+        if missing_only:
+            got = {r["be"] for r in conn.execute(
+                "SELECT DISTINCT lower(box_email) be FROM mail_messages "
+                "WHERE folder='inbox' AND subject=? AND lower(from_email)=lower(?)",
+                (tpl["name"], acc["email"])).fetchall()}
+            recips = [(eid, em) for eid, em in recips if em.lower() not in got]
         cc = [em for _, em in recips]
         if not cc:
             continue
