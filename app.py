@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.56"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.57"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4644,6 +4644,10 @@ MSG_TEMPLATES_TPL = """
  .mt-send-btn{background:#0f6cbd;border:1px solid #0f6cbd;color:#fff;font-size:.7rem;font-weight:800;
    padding:3px 12px;border-radius:20px;cursor:pointer;white-space:nowrap}
  .mt-send-btn:hover{background:#0b5394}
+ .mt-resend{display:inline-flex;align-items:center;gap:3px;background:#fff3e6;border:1px solid #f0c48a;
+   color:#b26a00;font-size:.7rem;font-weight:800;padding:3px 10px;border-radius:20px;
+   text-decoration:none;white-space:nowrap}
+ .mt-resend:hover{background:#ffe6cc}
  .mt-senders{font-size:.7rem;color:#0a7d33;margin-top:4px;min-height:1em}
  .mt-senders i{font-size:.72rem}
  .mt-sent{display:inline-block;font-size:.72rem;font-weight:800;color:#fff;background:#dc2626;
@@ -4715,6 +4719,10 @@ MSG_TEMPLATES_TPL = """
      <i class="bi bi-arrow-left-right"></i> إرسال/استقبال</button>
     <button type="button" class="mt-send-btn" data-bs-toggle="modal" data-bs-target="#snd{{ t.id }}">
      <i class="bi bi-send-fill"></i> إرسال</button>
+    <a class="mt-resend" href="{{ url_for('template_resend', tid=t.id) }}"
+       title="إعادة إرسال نفس التعميم من نفس الحساب اللي اتبعت منه — بتاريخ اليوم"
+       onclick="return confirm('إعادة إرسال «{{ t.name }}» من نفس الحساب اللي اتبعت منه آخر مرة، لكل المستلمين، بتاريخ النهاردة؟')">
+     <i class="bi bi-arrow-repeat"></i> إعادة إرسال</a>
     <a class="mt-reply-toggle {{ 'off' if t.no_reply else 'on' }}"
        href="{{ url_for('template_toggle_reply', tid=t.id) }}"
        title="اضغط للتبديل بين رد الموظفين وبدون رد">
@@ -10221,6 +10229,70 @@ def template_attachment_delete(aid):
     return redirect(url_for("message_templates_page"))
 
 
+def _broadcast_recipients(conn, acc, tpl, missing_only=False):
+    """مستلمو التعميم من حساب: موظفوه (أو كل الموظفين + الحسابات الرئيسية لو «تعميم»)."""
+    is_bc = ("is_broadcast" in acc.keys() and acc["is_broadcast"])
+    if is_bc:
+        emps = conn.execute(
+            "SELECT id, email FROM employees WHERE active=1 "
+            "AND owner_account_id IS NOT NULL").fetchall()
+    else:
+        emps = conn.execute(
+            "SELECT id, email FROM employees WHERE owner_account_id=? AND active=1",
+            (acc["id"],)).fetchall()
+    recips = [(e["id"], e["email"]) for e in emps
+              if _email_domain_internal(conn, e["email"])]
+    if is_bc:
+        seen = {em.lower() for _, em in recips}
+        for a2 in conn.execute("SELECT email FROM accounts WHERE active=1 AND id<>?",
+                               (acc["id"],)).fetchall():
+            em = a2["email"]
+            if em and em.lower() not in seen and _email_domain_internal(conn, em):
+                recips.append((None, em))
+                seen.add(em.lower())
+    if missing_only:
+        got = {r["be"] for r in conn.execute(
+            "SELECT DISTINCT lower(box_email) be FROM mail_messages "
+            "WHERE folder='inbox' AND subject=? AND lower(from_email)=lower(?)",
+            (tpl["name"], acc["email"])).fetchall()}
+        recips = [(eid, em) for eid, em in recips if em.lower() not in got]
+    return recips
+
+
+def _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style, missing_only=False):
+    """يبعت تعميم واحد (Bcc) من حساب، ويسجّله. يعيد عدد المستلمين (0 لو مفيش)."""
+    recips = _broadcast_recipients(conn, acc, tpl, missing_only)
+    cc = [em for _, em in recips]
+    if not cc:
+        return 0
+    acc_entity = {"name": acc["display_name"] or acc["email"], "email": acc["email"],
+                  "title": "", "department": "", "phone": ""}
+    content = _fill_placeholders(tpl["body"] or "", acc_entity)
+    html = _text_to_html(content)
+    acc_logo = _effective_logo(acc["logo"] if "logo" in acc.keys() else "")
+    if sig_style == "rich":
+        html += "<br><br>" + _rich_signature_html(acc_entity, acc_logo)
+    else:
+        asig = _render_sig_text(acc["signature"] or "", acc_entity)
+        if asig:
+            html += "<br><br>" + _signature_html(asig, acc_logo)
+    ok, _ = internal_deliver_cc(acc["email"], acc["display_name"] or "", acc["email"],
+                                cc, tpl["name"], html, conn=conn,
+                                date_override=send_dt, attachment_ids=att_ids)
+    if not ok:
+        return 0
+    stamp = (send_dt.isoformat(timespec="seconds") if send_dt
+             else datetime.now().isoformat(timespec="seconds"))
+    conn.execute("INSERT INTO tpl_send_log (template_id, mode, n_recipients) "
+                 "VALUES (?, 'cc', ?)", (tpl["id"], len(cc)))
+    conn.executemany(
+        """INSERT INTO sent_emails (account_id, employee_id, campaign_id, to_email,
+                subject, body, status, sent_at)
+           VALUES (?, ?, NULL, ?, ?, '', 'sent', ?)""",
+        [(acc["id"], eid, em, tpl["name"], stamp) for eid, em in recips])
+    return len(cc)
+
+
 @app.route("/templates/<int:tid>/send-cc", methods=["POST"])
 def template_send_cc(tid):
     """إيميل واحد زي الأوتلوك: الحساب الرئيسي يبعت إيميل واحد وكل موظفيه في CC."""
@@ -10246,72 +10318,51 @@ def template_send_cc(tid):
     else:
         accounts = conn.execute("SELECT * FROM accounts WHERE active=1 ORDER BY id").fetchall()
     n_mails = n_emp = 0
-    stamp = (send_dt.isoformat(timespec="seconds") if send_dt
-             else datetime.now().isoformat(timespec="seconds"))
     for acc in accounts:
-        is_bc = ("is_broadcast" in acc.keys() and acc["is_broadcast"])
-        if is_bc:
-            # حساب التعميم (INFO) يبعت لكل الإيميلات: الموظفين (فرعي) + الحسابات الرئيسية
-            emps = conn.execute(
-                "SELECT id, email FROM employees WHERE active=1 "
-                "AND owner_account_id IS NOT NULL").fetchall()
-        else:
-            emps = conn.execute(
-                "SELECT id, email FROM employees WHERE owner_account_id=? AND active=1",
-                (acc["id"],)).fetchall()
-        recips = [(e["id"], e["email"]) for e in emps
-                  if _email_domain_internal(conn, e["email"])]
-        if is_bc:
-            # أضف الحسابات الرئيسية (عدا الحساب المرسِل نفسه) للتعميم
-            seen = {em.lower() for _, em in recips}
-            others = conn.execute(
-                "SELECT email FROM accounts WHERE active=1 AND id<>?", (acc["id"],)).fetchall()
-            for a2 in others:
-                em = a2["email"]
-                if em and em.lower() not in seen and _email_domain_internal(conn, em):
-                    recips.append((None, em))
-                    seen.add(em.lower())
-        # «ابعت للي ما وصلهمش بس»: نشيل اللي عندهم نسخة من القالب ده من نفس المرسِل
-        if missing_only:
-            got = {r["be"] for r in conn.execute(
-                "SELECT DISTINCT lower(box_email) be FROM mail_messages "
-                "WHERE folder='inbox' AND subject=? AND lower(from_email)=lower(?)",
-                (tpl["name"], acc["email"])).fetchall()}
-            recips = [(eid, em) for eid, em in recips if em.lower() not in got]
-        cc = [em for _, em in recips]
-        if not cc:
-            continue
-        acc_entity = {"name": acc["display_name"] or acc["email"], "email": acc["email"],
-                      "title": "", "department": "", "phone": ""}
-        content = _fill_placeholders(tpl["body"] or "", acc_entity)
-        html = _text_to_html(content)
-        acc_logo = _effective_logo(acc["logo"] if "logo" in acc.keys() else "")
-        if sig_style == "rich":
-            html += "<br><br>" + _rich_signature_html(acc_entity, acc_logo)
-        else:
-            asig = _render_sig_text(acc["signature"] or "", acc_entity)
-            if asig:
-                html += "<br><br>" + _signature_html(asig, acc_logo)
-        ok, _ = internal_deliver_cc(acc["email"], acc["display_name"] or "", acc["email"],
-                                    cc, tpl["name"], html, conn=conn,
-                                    date_override=send_dt, attachment_ids=att_ids)
-        if ok:
+        c = _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style, missing_only)
+        if c:
             n_mails += 1
-            n_emp += len(cc)
-            conn.execute("INSERT INTO tpl_send_log (template_id, mode, n_recipients) "
-                         "VALUES (?, 'cc', ?)", (tid, len(cc)))
-            # نسجّل كل مُستلِم في سجل الإرسال عشان التعميم يبان في «البث الحي»
-            conn.executemany(
-                """INSERT INTO sent_emails (account_id, employee_id, campaign_id, to_email,
-                        subject, body, status, sent_at)
-                   VALUES (?, ?, NULL, ?, ?, '', 'sent', ?)""",
-                [(acc["id"], eid, em, tpl["name"], stamp) for eid, em in recips])
+            n_emp += c
     conn.commit()
     conn.close()
     if n_mails:
         flash("تم إرسال %d إيميل (CC) لإجمالي %d موظف" % (n_mails, n_emp), "success")
     else:
-        flash("لا يوجد موظفون داخليون في النطاق المحدد", "error")
+        flash("لا يوجد مستلمون جدد في النطاق المحدد", "error")
+    return redirect(url_for("message_templates_page"))
+
+
+@app.route("/templates/<int:tid>/resend")
+def template_resend(tid):
+    """إعادة إرسال: يعيد بعت التعميم من نفس الحساب اللي اتبعت منه آخر مرة — بتاريخ اليوم."""
+    conn = get_connection()
+    tpl = conn.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()
+    if not tpl:
+        conn.close()
+        abort(404)
+    # الحساب اللي اتبعت منه آخر تعميم لهذا القالب (من نسخة الصادر بالـ Cc)
+    last = conn.execute(
+        "SELECT box_email FROM mail_messages WHERE subject=? AND folder='sent' "
+        "AND cc_emails<>'' ORDER BY id DESC LIMIT 1", (tpl["name"],)).fetchone()
+    acc = None
+    if last:
+        acc = conn.execute("SELECT * FROM accounts WHERE lower(email)=lower(?)",
+                           (last["box_email"],)).fetchone()
+    if not acc:
+        conn.close()
+        flash("القالب ده لسه ماتبعتش كتعميم — استخدم زر «إرسال» واختَر الحساب أول مرة.",
+              "error")
+        return redirect(url_for("message_templates_page"))
+    sig_style = get_setting("signature_style", "rich")
+    att_ids = _tpl_att_ids(conn, "camp", tid, "msg")
+    c = _send_broadcast_once(conn, acc, tpl, None, att_ids, sig_style, missing_only=False)
+    conn.commit()
+    conn.close()
+    if c:
+        flash("تمت إعادة الإرسال من «%s» لإجمالي %d مستلم (بتاريخ اليوم)."
+              % (acc["display_name"] or acc["email"], c), "success")
+    else:
+        flash("لا يوجد مستلمون لإعادة الإرسال.", "error")
     return redirect(url_for("message_templates_page"))
 
 
