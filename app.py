@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.50"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.51"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -10148,17 +10148,21 @@ def template_send_cc(tid):
     else:
         accounts = conn.execute("SELECT * FROM accounts WHERE active=1 ORDER BY id").fetchall()
     n_mails = n_emp = 0
+    stamp = (send_dt.isoformat(timespec="seconds") if send_dt
+             else datetime.now().isoformat(timespec="seconds"))
     for acc in accounts:
         # حساب التعميم (INFO) يبعت لكل الموظفين؛ غيره يبعت لموظفيه فقط
         if "is_broadcast" in acc.keys() and acc["is_broadcast"]:
             emps = conn.execute(
-                "SELECT email FROM employees WHERE active=1 "
+                "SELECT id, email FROM employees WHERE active=1 "
                 "AND owner_account_id IS NOT NULL").fetchall()
         else:
             emps = conn.execute(
-                "SELECT email FROM employees WHERE owner_account_id=? AND active=1",
+                "SELECT id, email FROM employees WHERE owner_account_id=? AND active=1",
                 (acc["id"],)).fetchall()
-        cc = [e["email"] for e in emps if _email_domain_internal(conn, e["email"])]
+        recips = [(e["id"], e["email"]) for e in emps
+                  if _email_domain_internal(conn, e["email"])]
+        cc = [em for _, em in recips]
         if not cc:
             continue
         acc_entity = {"name": acc["display_name"] or acc["email"], "email": acc["email"],
@@ -10180,6 +10184,12 @@ def template_send_cc(tid):
             n_emp += len(cc)
             conn.execute("INSERT INTO tpl_send_log (template_id, mode, n_recipients) "
                          "VALUES (?, 'cc', ?)", (tid, len(cc)))
+            # نسجّل كل مُستلِم في سجل الإرسال عشان التعميم يبان في «البث الحي»
+            conn.executemany(
+                """INSERT INTO sent_emails (account_id, employee_id, campaign_id, to_email,
+                        subject, body, status, sent_at)
+                   VALUES (?, ?, NULL, ?, ?, '', 'sent', ?)""",
+                [(acc["id"], eid, em, tpl["name"], stamp) for eid, em in recips])
     conn.commit()
     conn.close()
     if n_mails:
