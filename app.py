@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.45"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.46"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -501,6 +501,15 @@ def init_db():
             created_at    TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
 
+        -- سجل مرّات إرسال كل قالب (كل عملية إرسال = سطر واحد) — للعدّاد «اتبعت N مرة»
+        CREATE TABLE IF NOT EXISTS tpl_send_log (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            template_id INTEGER NOT NULL,
+            mode        TEXT NOT NULL DEFAULT 'campaign',  -- campaign | cc
+            n_recipients INTEGER NOT NULL DEFAULT 0,
+            created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+
         -- ربط المرفقات بالرسائل المُسلَّمة (بدون تكرار البيانات) عبر msg_id
         CREATE TABLE IF NOT EXISTS msg_attachments (
             id         INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -749,6 +758,8 @@ def init_db():
     mm_cols = _table_columns(cur, "mail_messages")
     if "campaign_id" not in mm_cols:
         cur.execute("ALTER TABLE mail_messages ADD COLUMN campaign_id INTEGER")
+    if "cc_emails" not in mm_cols:
+        cur.execute("ALTER TABLE mail_messages ADD COLUMN cc_emails TEXT NOT NULL DEFAULT ''")
 
     # القالب: الحسابات المرسِلة له + رد الموظفين الخاص به (إرسال + استقبال داخل القالب)
     tpl_cols = _table_columns(cur, "templates")
@@ -1258,6 +1269,50 @@ def internal_deliver(from_email, from_name, to_email, subject, body_html,
         return True, msg_id
     except Exception as exc:  # noqa: BLE001
         log.warning("فشل التسليم الداخلي إلى %s: %s", to_email, exc)
+        return False, str(exc)
+    finally:
+        if own:
+            conn.close()
+
+
+def internal_deliver_cc(from_email, from_name, to_email, cc_list, subject, body_html,
+                        conn=None, date_override=None, attachment_ids=None,
+                        mark_replied=True):
+    """إيميل واحد زي الأوتلوك: نسخة sent للمرسِل + نسخة inbox لكل مستلِم في CC،
+    وكلهم بيشوفوا نفس الـ To/Cc. يعيد (نجاح, msg_id). mark_replied=True يمنع
+    الرد العكسي التلقائي على البث (عشان ميتسبّش طوفان ردود)."""
+    own = conn is None
+    if own:
+        conn = get_connection()
+    msg_id = make_msgid(domain="internal.local")
+    now = (date_override.isoformat(timespec="seconds") if date_override
+           else datetime.now().isoformat(timespec="seconds"))
+    cc_join = ", ".join(cc_list)
+    repl = 1 if mark_replied else 0
+    try:
+        # نسخة المرسِل (مُرسَل)
+        conn.execute(
+            """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
+                   to_email, cc_emails, subject, body, msg_id, in_reply_to, created_at, is_replied)
+               VALUES (?, 'sent', ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1)""",
+            (from_email.lower(), from_email.lower(), from_name or "", to_email.lower(),
+             cc_join, subject, body_html, msg_id, now))
+        # نسخة inbox لكل موظف في CC
+        for em in cc_list:
+            conn.execute(
+                """INSERT INTO mail_messages (box_email, folder, from_email, from_name,
+                       to_email, cc_emails, subject, body, msg_id, in_reply_to, created_at, is_replied)
+                   VALUES (?, 'inbox', ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)""",
+                (em.lower(), from_email.lower(), from_name or "", to_email.lower(),
+                 cc_join, subject, body_html, msg_id, now, repl))
+        for aid in (attachment_ids or []):
+            conn.execute("INSERT INTO msg_attachments (msg_id, tpl_att_id) VALUES (?, ?)",
+                         (msg_id, aid))
+        if own:
+            conn.commit()
+        return True, msg_id
+    except Exception as exc:  # noqa: BLE001
+        log.warning("فشل تسليم CC: %s", exc)
         return False, str(exc)
     finally:
         if own:
@@ -4753,12 +4808,15 @@ MSG_TEMPLATES_TPL = """
          <i class="bi bi-clock-history"></i> ساعة الرد</label>
         <input name="reply_time" type="time" class="form-control sndTime" value="12:00" required></div>
       </div>
-      <div class="form-text"><i class="bi bi-info-circle"></i> الحملة تتبعت فورًا وتتوزّع خلال دقيقة،
-       والردود التلقائية توصل حسب تاريخ/وقت الرد. تابعها لحظيًا في
-       <a href="{{ url_for('campaigns') }}">الحملات</a>.</div>
+      <div class="form-text"><i class="bi bi-info-circle"></i> <b>أنشئ وأرسل:</b> إيميل منفصل
+       لكل موظف (مشخصن + ردود تلقائية). &nbsp;|&nbsp; <b>إيميل واحد (CC):</b> إيميل واحد زي
+       الأوتلوك وكل الموظفين في CC (بدون ردود تلقائية، وبيحتسب «مرة» واحدة).</div>
      </div>
      <div class="modal-footer">
-      <button class="btn btn-primary"><i class="bi bi-rocket-takeoff"></i> أنشئ وأرسل</button></div>
+      <button class="btn btn-primary"><i class="bi bi-rocket-takeoff"></i> أنشئ وأرسل</button>
+      <button class="btn btn-success" formnovalidate
+        formaction="{{ url_for('template_send_cc', tid=t.id) }}">
+       <i class="bi bi-people-fill"></i> إيميل واحد (CC)</button></div>
     </form>
    </div></div></div>
  {% endfor %}
@@ -9767,14 +9825,20 @@ def save_employee_signature(eid):
 def message_templates_page():
     conn = get_connection()
     rows = conn.execute("SELECT * FROM templates ORDER BY id DESC").fetchall()
-    # كام مرة اتبعت كل قالب (رسائل مُرسَلة فعلاً في حملات بتستخدم القالب)
+    # كام *مرة* اتبعت كل قالب (عدد عمليات الإرسال: حملة = مرة، CC = مرة) — مش عدد الموظفين
     sent_counts = {}
     for r in conn.execute(
-            """SELECT c.template_id AS tid, COUNT(*) AS n
+            """SELECT c.template_id AS tid, COUNT(DISTINCT se.campaign_id) AS n
                FROM sent_emails se JOIN campaigns c ON c.id = se.campaign_id
                WHERE se.status='sent' GROUP BY c.template_id""").fetchall():
         if r["tid"] is not None:
             sent_counts[r["tid"]] = r["n"]
+    # أضف مرّات إرسال CC (المسجّلة في tpl_send_log)
+    for r in conn.execute(
+            "SELECT template_id AS tid, COUNT(*) AS n FROM tpl_send_log "
+            "WHERE mode='cc' GROUP BY template_id").fetchall():
+        if r["tid"] is not None:
+            sent_counts[r["tid"]] = sent_counts.get(r["tid"], 0) + r["n"]
     # مرفقات القوالب: {tid: {'msg': [...], 'reply': [...]}}
     tpl_atts = {}
     for a in conn.execute(
@@ -9926,6 +9990,65 @@ def template_attachment_delete(aid):
     conn.commit()
     conn.close()
     flash("تم حذف المرفق", "info")
+    return redirect(url_for("message_templates_page"))
+
+
+@app.route("/templates/<int:tid>/send-cc", methods=["POST"])
+def template_send_cc(tid):
+    """إيميل واحد زي الأوتلوك: الحساب الرئيسي يبعت إيميل واحد وكل موظفيه في CC."""
+    f = request.form
+    scope_acc = (f.get("scope_account") or "").strip()
+    send_date = (f.get("send_date", "") or "").strip()
+    send_time = (f.get("send_time", "") or "12:00").strip() or "12:00"
+    conn = get_connection()
+    tpl = conn.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()
+    if not tpl:
+        conn.close()
+        flash("القالب غير موجود", "error")
+        return redirect(url_for("message_templates_page"))
+    try:
+        send_dt = datetime.fromisoformat(send_date + "T" + send_time) if send_date else None
+    except ValueError:
+        send_dt = None
+    sig_style = get_setting("signature_style", "rich")
+    att_ids = _tpl_att_ids(conn, "camp", tid, "msg")
+    if scope_acc.isdigit():
+        accounts = conn.execute("SELECT * FROM accounts WHERE id=?", (int(scope_acc),)).fetchall()
+    else:
+        accounts = conn.execute("SELECT * FROM accounts WHERE active=1 ORDER BY id").fetchall()
+    n_mails = n_emp = 0
+    for acc in accounts:
+        emps = conn.execute(
+            "SELECT email FROM employees WHERE owner_account_id=? AND active=1",
+            (acc["id"],)).fetchall()
+        cc = [e["email"] for e in emps if _email_domain_internal(conn, e["email"])]
+        if not cc:
+            continue
+        acc_entity = {"name": acc["display_name"] or acc["email"], "email": acc["email"],
+                      "title": "", "department": "", "phone": ""}
+        content = _fill_placeholders(tpl["body"] or "", acc_entity)
+        html = _text_to_html(content)
+        acc_logo = _effective_logo(acc["logo"] if "logo" in acc.keys() else "")
+        if sig_style == "rich":
+            html += "<br><br>" + _rich_signature_html(acc_entity, acc_logo)
+        else:
+            asig = _render_sig_text(acc["signature"] or "", acc_entity)
+            if asig:
+                html += "<br><br>" + _signature_html(asig, acc_logo)
+        ok, _ = internal_deliver_cc(acc["email"], acc["display_name"] or "", acc["email"],
+                                    cc, tpl["name"], html, conn=conn,
+                                    date_override=send_dt, attachment_ids=att_ids)
+        if ok:
+            n_mails += 1
+            n_emp += len(cc)
+            conn.execute("INSERT INTO tpl_send_log (template_id, mode, n_recipients) "
+                         "VALUES (?, 'cc', ?)", (tid, len(cc)))
+    conn.commit()
+    conn.close()
+    if n_mails:
+        flash("تم إرسال %d إيميل (CC) لإجمالي %d موظف" % (n_mails, n_emp), "success")
+    else:
+        flash("لا يوجد موظفون داخليون في النطاق المحدد", "error")
     return redirect(url_for("message_templates_page"))
 
 
@@ -11749,6 +11872,9 @@ def _int_build_raw(row):
         frm = formataddr((str(make_header([(row["from_name"], "utf-8")])), row["from_email"]))
     msg["From"] = frm
     msg["To"] = row["to_email"]
+    cc = row["cc_emails"] if ("cc_emails" in row.keys()) else ""
+    if cc:
+        msg["Cc"] = cc
     msg["Subject"] = row["subject"] or ""
     try:
         dt = datetime.fromisoformat(str(row["created_at"]))
