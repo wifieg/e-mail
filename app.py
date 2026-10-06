@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.57"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.58"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4827,7 +4827,8 @@ MSG_TEMPLATES_TPL = """
   {% set sel = (t.send_accounts or '').split(',') %}
   <div class="modal fade" id="snd{{ t.id }}" tabindex="-1"><div class="modal-dialog">
    <div class="modal-content">
-    <form method="POST" action="{{ url_for('add_campaign') }}">
+    <form method="POST" action="{{ url_for('add_campaign') }}"
+          onsubmit="var bs=this.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].disabled=true;}setTimeout(function(){for(var j=0;j<bs.length;j++){bs[j].disabled=false;}},6000);return true;">
      <input type="hidden" name="template_id" value="{{ t.id }}">
      <div class="modal-header">
       <h5 class="modal-title"><i class="bi bi-send-fill text-primary"></i> إرسال: {{ t.name }}</h5>
@@ -4859,6 +4860,11 @@ MSG_TEMPLATES_TPL = """
        <input type="checkbox" name="missing_only" value="1">
        <span><i class="bi bi-person-dash"></i> ابعت للي ما وصلهمش بس
         (يتخطّى اللي استلموا القالب ده قبل كده — مفيد للتعميم)</span></label>
+      <label class="small d-flex align-items-center gap-2 mb-2"
+             style="background:#eaf7ee;border:1px solid #b6e3c6;border-radius:7px;padding:6px 10px">
+       <input type="checkbox" name="allow_reply" value="1">
+       <span><i class="bi bi-chat-dots"></i> خلّي الموظفين يردّوا على التعميم
+        (الافتراضي: <b>بدون رد</b> — زي الـ CC/تعميم من INFO)</span></label>
       <div class="form-text"><i class="bi bi-info-circle"></i> <b>أنشئ وأرسل:</b> إيميل منفصل
        لكل موظف (مشخصن + ردود تلقائية). &nbsp;|&nbsp; <b>إيميل واحد (مخفي):</b> إرسال واحد
        لكل الإيميلات (الموظفين + الحسابات الرئيسية لو الحساب «تعميم»)، وكل واحد يشوفه كأنه
@@ -8959,6 +8965,19 @@ def dedup_mail_data():
     _run("""DELETE FROM sent_emails WHERE campaign_id IS NOT NULL AND id NOT IN (
               SELECT MIN(id) FROM sent_emails WHERE campaign_id IS NOT NULL
               GROUP BY campaign_id, employee_id)""")
+    # 5) تكرار التعميم (Bcc): نسخة واحدة لكل (مستلِم، مجلد، مرسِل، موضوع) للرسائل
+    #    اللي جاية من تعميم (نفس المرسِل+الموضوع ظهر كنسخة صادرة فيها Cc). ده بيشيل
+    #    التكرار لو اتضغط إرسال أكتر من مرة.
+    _run("""DELETE FROM mail_messages WHERE campaign_id IS NULL AND id NOT IN (
+              SELECT MIN(id) FROM mail_messages WHERE campaign_id IS NULL
+              GROUP BY lower(box_email), folder, lower(from_email), subject)
+            AND (lower(from_email), subject) IN (
+              SELECT DISTINCT lower(from_email), subject FROM mail_messages
+              WHERE folder='sent' AND cc_emails<>'')""")
+    # سجل الإرسال للتعميم: سطر واحد لكل (مرسِل، مستلِم، موضوع)
+    _run("""DELETE FROM sent_emails WHERE campaign_id IS NULL AND id NOT IN (
+              SELECT MIN(id) FROM sent_emails WHERE campaign_id IS NULL
+              GROUP BY account_id, lower(to_email), subject)""")
     conn.commit()
     conn.close()
     flash("تم التنظيف: حُذفت الرسائل/الردود المكررة (أُبقيت رسالة ورد واحد لكل موظف). "
@@ -10259,8 +10278,10 @@ def _broadcast_recipients(conn, acc, tpl, missing_only=False):
     return recips
 
 
-def _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style, missing_only=False):
-    """يبعت تعميم واحد (Bcc) من حساب، ويسجّله. يعيد عدد المستلمين (0 لو مفيش)."""
+def _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style,
+                         missing_only=False, allow_reply=False):
+    """يبعت تعميم واحد (Bcc) من حساب، ويسجّله. يعيد عدد المستلمين (0 لو مفيش).
+    allow_reply=False (الافتراضي) = بدون رد؛ True = يسمح للموظفين بالرد على التعميم."""
     recips = _broadcast_recipients(conn, acc, tpl, missing_only)
     cc = [em for _, em in recips]
     if not cc:
@@ -10278,7 +10299,8 @@ def _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style, missing_on
             html += "<br><br>" + _signature_html(asig, acc_logo)
     ok, _ = internal_deliver_cc(acc["email"], acc["display_name"] or "", acc["email"],
                                 cc, tpl["name"], html, conn=conn,
-                                date_override=send_dt, attachment_ids=att_ids)
+                                date_override=send_dt, attachment_ids=att_ids,
+                                mark_replied=not allow_reply)
     if not ok:
         return 0
     stamp = (send_dt.isoformat(timespec="seconds") if send_dt
@@ -10293,6 +10315,23 @@ def _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style, missing_on
     return len(cc)
 
 
+def _recent_broadcast(conn, tid, seconds=30):
+    """هل اتبعت تعميم لنفس القالب خلال آخر N ثانية؟ (لمنع الضغط المكرر)."""
+    r = conn.execute("SELECT created_at FROM tpl_send_log WHERE template_id=? AND mode='cc' "
+                     "ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+    if not r or not r["created_at"]:
+        return False
+    try:
+        ts = r["created_at"]
+        if isinstance(ts, str):
+            dt = datetime.fromisoformat(ts.replace("Z", "").split("+")[0].strip().replace(" ", "T"))
+        else:
+            dt = ts.replace(tzinfo=None) if getattr(ts, "tzinfo", None) else ts
+        return 0 <= (datetime.now() - dt).total_seconds() < seconds
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @app.route("/templates/<int:tid>/send-cc", methods=["POST"])
 def template_send_cc(tid):
     """إيميل واحد زي الأوتلوك: الحساب الرئيسي يبعت إيميل واحد وكل موظفيه في CC."""
@@ -10301,11 +10340,18 @@ def template_send_cc(tid):
     send_date = (f.get("send_date", "") or "").strip()
     send_time = (f.get("send_time", "") or "12:00").strip() or "12:00"
     missing_only = bool(f.get("missing_only"))
+    allow_reply = bool(f.get("allow_reply"))
     conn = get_connection()
     tpl = conn.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()
     if not tpl:
         conn.close()
         flash("القالب غير موجود", "error")
+        return redirect(url_for("message_templates_page"))
+    # منع الإرسال المكرر لو اتضغط مرتين بسرعة (آخر تعميم لنفس القالب خلال 30 ثانية)
+    if _recent_broadcast(conn, tid, seconds=30):
+        conn.close()
+        flash("تم تجاهل الضغط المكرر — القالب ده اتبعت من ثواني. "
+              "لو عايز تبعت تاني استنى شوية أو استخدم «إعادة إرسال».", "warning")
         return redirect(url_for("message_templates_page"))
     try:
         send_dt = datetime.fromisoformat(send_date + "T" + send_time) if send_date else None
@@ -10319,7 +10365,8 @@ def template_send_cc(tid):
         accounts = conn.execute("SELECT * FROM accounts WHERE active=1 ORDER BY id").fetchall()
     n_mails = n_emp = 0
     for acc in accounts:
-        c = _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style, missing_only)
+        c = _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style,
+                                 missing_only, allow_reply)
         if c:
             n_mails += 1
             n_emp += c
