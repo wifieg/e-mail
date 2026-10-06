@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.48"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.49"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -711,6 +711,7 @@ def init_db():
                      ("last_verified", "TIMESTAMP"),
                      ("signature", "TEXT NOT NULL DEFAULT ''"),
                      ("internal", "INTEGER NOT NULL DEFAULT 0"),
+                     ("is_broadcast", "INTEGER NOT NULL DEFAULT 0"),
                      ("logo", "TEXT NOT NULL DEFAULT ''")]:
         if col not in acc_cols:
             cur.execute(f"ALTER TABLE accounts ADD COLUMN {col} {ddl}")
@@ -7221,18 +7222,26 @@ DISTRIBUTION_TPL = """
      <div class="ds-acc-top">
       <span class="status-dot {{ 'on' if g.acc.active else 'off' }}"></span>
       <span class="nm text-truncate">{{ g.acc.display_name or g.acc.email }}</span>
-      <span class="ds-cnt">{{ g.count }} موظف</span>
+      {% if g.acc.is_broadcast %}<span class="ds-cnt" style="background:#0f6cbd">📢 تعميم</span>
+      {% else %}<span class="ds-cnt">{{ g.count }} موظف</span>{% endif %}
      </div>
      <div class="em">{{ g.acc.email }}</div>
      <div class="ds-depts">
-      {% for d in g.depts %}<span class="dep">{{ d.department }} ({{ d.c }})</span>
-      {% else %}<span class="text-muted small">لا يوجد موظفون مرتبطون</span>{% endfor %}
+      {% if g.acc.is_broadcast %}<span class="dep" style="background:#e7f1fb;color:#0f6cbd">يبعت لكل الموظفين (فرعيين ورئيسيين)</span>
+      {% else %}
+       {% for d in g.depts %}<span class="dep">{{ d.department }} ({{ d.c }})</span>
+       {% else %}<span class="text-muted small">لا يوجد موظفون مرتبطون</span>{% endfor %}
+      {% endif %}
      </div>
      <div class="ds-acc-btns">
       <a class="ds-mini" href="{{ url_for('mail_view', kind='account', oid=g.acc.id) }}">
        <i class="bi bi-envelope"></i> بريده</a>
       <a class="ds-mini dark" href="{{ url_for('campaigns') }}?scope={{ g.acc.id }}">
-       <i class="bi bi-megaphone"></i> حملة لمجموعته</a>
+       <i class="bi bi-megaphone"></i> حملة {{ 'للكل' if g.acc.is_broadcast else 'لمجموعته' }}</a>
+      <a class="ds-mini" href="{{ url_for('account_toggle_broadcast', aid=g.acc.id) }}"
+         title="حساب التعميم يبعت لكل الموظفين ولا يتوزّع عليه موظفون"
+         style="{{ 'color:#0f6cbd;border-color:#0f6cbd' if g.acc.is_broadcast else '' }}">
+       <i class="bi bi-megaphone-fill"></i> {{ 'إلغاء التعميم' if g.acc.is_broadcast else 'اجعله تعميم' }}</a>
      </div>
     </div>
    {% else %}
@@ -9731,7 +9740,9 @@ def distribution_auto():
     sel = [int(x) for x in request.form.getlist("accounts") if x.isdigit()]
     conn = get_connection()
     cur = conn.cursor()
-    accs = cur.execute("SELECT id FROM accounts WHERE active=1 ORDER BY id").fetchall()
+    # حسابات التعميم مستثناة دايماً من التوزيع (ما يتوزّعش عليها موظفون)
+    accs = cur.execute("SELECT id FROM accounts WHERE active=1 AND is_broadcast=0 "
+                       "ORDER BY id").fetchall()
     acc_ids = [a["id"] for a in accs]
     if sel:                       # اقصر التوزيع على الحسابات المختارة فقط
         acc_ids = [i for i in acc_ids if i in sel]
@@ -9838,6 +9849,23 @@ def distribution_clear():
     conn.close()
     flash("تم إلغاء كل التوزيع", "info")
     return redirect(url_for("distribution"))
+
+
+@app.route("/accounts/<int:aid>/toggle-broadcast")
+def account_toggle_broadcast(aid):
+    """حساب التعميم: يبعت لكل الموظفين (فرعيين ورئيسيين) ولا يتوزّع عليه موظفون."""
+    conn = get_connection()
+    a = conn.execute("SELECT is_broadcast FROM accounts WHERE id=?", (aid,)).fetchone()
+    if not a:
+        conn.close()
+        abort(404)
+    newv = 0 if a["is_broadcast"] else 1
+    conn.execute("UPDATE accounts SET is_broadcast=? WHERE id=?", (newv, aid))
+    conn.commit()
+    conn.close()
+    flash("تم تفعيل «حساب تعميم» — هيبعت لكل الموظفين." if newv
+          else "تم إلغاء وضع التعميم عن الحساب.", "success")
+    return redirect(request.referrer or url_for("distribution"))
 
 
 # ------------------------------------------------------------------ توقيع الموظفين
@@ -10087,9 +10115,15 @@ def template_send_cc(tid):
         accounts = conn.execute("SELECT * FROM accounts WHERE active=1 ORDER BY id").fetchall()
     n_mails = n_emp = 0
     for acc in accounts:
-        emps = conn.execute(
-            "SELECT email FROM employees WHERE owner_account_id=? AND active=1",
-            (acc["id"],)).fetchall()
+        # حساب التعميم (INFO) يبعت لكل الموظفين؛ غيره يبعت لموظفيه فقط
+        if "is_broadcast" in acc.keys() and acc["is_broadcast"]:
+            emps = conn.execute(
+                "SELECT email FROM employees WHERE active=1 "
+                "AND owner_account_id IS NOT NULL").fetchall()
+        else:
+            emps = conn.execute(
+                "SELECT email FROM employees WHERE owner_account_id=? AND active=1",
+                (acc["id"],)).fetchall()
         cc = [e["email"] for e in emps if _email_domain_internal(conn, e["email"])]
         if not cc:
             continue
@@ -10480,8 +10514,14 @@ def add_campaign():
         where.append("(lower(name) LIKE ? OR lower(email) LIKE ? OR lower(department) LIKE ?)")
         params += [f"%{flt}%", f"%{flt}%", f"%{flt}%"]
     if scope_acc.isdigit():
-        where.append("owner_account_id = ?")
-        params.append(int(scope_acc))
+        # حساب التعميم (INFO): الحملة تروح لكل الموظفين مش لموظفيه بس
+        _bc = cur.execute("SELECT is_broadcast FROM accounts WHERE id=?",
+                          (int(scope_acc),)).fetchone()
+        if not (_bc and _bc["is_broadcast"]):
+            where.append("owner_account_id = ?")
+            params.append(int(scope_acc))
+        else:
+            where.append("owner_account_id IS NOT NULL")
     emps = cur.execute("SELECT id FROM employees WHERE " + " AND ".join(where), params).fetchall()
 
     cur.executemany("INSERT OR IGNORE INTO campaign_recipients (campaign_id, employee_id) VALUES (?, ?)",
