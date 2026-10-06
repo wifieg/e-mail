@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.53"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.54"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4610,9 +4610,13 @@ MSG_TEMPLATES_TPL = """
  .mt-add{background:#0f6cbd;border:none;color:#fff;padding:6px 14px;border-radius:7px;
    font-size:.84rem;font-weight:600;cursor:pointer;margin-bottom:10px}
  .mt-add:hover{background:#115ea3}
- .mt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(290px,1fr));gap:10px}
+ .mt-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:10px}
  .mt-card{background:#fff;border:1.5px solid #c7d0e0;border-inline-start:4px solid #0f6cbd;
    border-radius:10px;padding:10px 12px;box-shadow:0 1px 6px rgba(20,40,80,.06)}
+ .mt-compact{padding:8px 10px}
+ .mt-chips{display:flex;flex-wrap:wrap;gap:5px;align-items:center;margin-top:6px}
+ .mt-mini-badge{display:inline-flex;align-items:center;gap:3px;font-size:.68rem;font-weight:700;
+   padding:1px 8px;border-radius:20px;border:1px solid}
  .mt-card-t{display:flex;align-items:center;gap:6px;margin-bottom:6px;padding-bottom:6px;
    border-bottom:2px solid #eef1f6}
  .mt-card-t .nm{font-weight:700;color:#0f6cbd;font-size:.9rem}
@@ -4694,47 +4698,59 @@ MSG_TEMPLATES_TPL = """
  <div class="mt-grid">
  {% for t in rows %}
   {% set sel = (t.send_accounts or '').split(',') %}
-  <div class="mt-card" data-senders="{{ t.send_accounts or '' }}">
+  {% set am = (tpl_atts.get(t.id) or {}).get('msg') or [] %}
+  {% set ar = (tpl_atts.get(t.id) or {}).get('reply') or [] %}
+  {% set snames = [] %}
+  {% for a in accs %}{% if a.id|string in sel %}{% set _ = snames.append(a.display_name or a.email) %}{% endif %}{% endfor %}
+  <div class="mt-card mt-compact" data-senders="{{ t.send_accounts or '' }}">
    <div class="mt-card-t">
     <i class="bi bi-envelope-paper text-primary"></i>
-    <button type="button" class="nm nm-btn" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}"
-            title="إعداد الإرسال والاستقبال">{{ t.name }}</button>
+    <button type="button" class="nm nm-btn" data-bs-toggle="modal" data-bs-target="#edt{{ t.id }}"
+            title="افتح لعرض/تعديل نص القالب">{{ t.name }}</button>
+   </div>
+   <div class="mt-chips">
     <button type="button" class="mt-cfg" data-bs-toggle="modal" data-bs-target="#cfg{{ t.id }}">
      <i class="bi bi-arrow-left-right"></i> إرسال/استقبال</button>
     <button type="button" class="mt-send-btn" data-bs-toggle="modal" data-bs-target="#snd{{ t.id }}">
      <i class="bi bi-send-fill"></i> إرسال</button>
-   </div>
-   <a class="mt-reply-toggle {{ 'off' if t.no_reply else 'on' }}"
-      href="{{ url_for('template_toggle_reply', tid=t.id) }}"
-      title="اضغط للتبديل بين رد الموظفين وبدون رد">
-    {% if t.no_reply %}<i class="bi bi-bell-slash-fill"></i> بدون رد (استلام فقط)
-    {% else %}<i class="bi bi-chat-dots-fill"></i> رد الموظفين: مُفعّل{% endif %}</a>
-   {% if sent_counts.get(t.id) %}
-   <div class="mt-sent"><i class="bi bi-send-fill"></i> اتبعت {{ sent_counts.get(t.id) }} مرة</div>
-   {% endif %}
-   <div class="mt-senders">
-    {% set snames = [] %}
-    {% for a in accs %}{% if a.id|string in sel %}{% set _ = snames.append(a.display_name or a.email) %}{% endif %}{% endfor %}
-    {% if snames %}<i class="bi bi-send-check"></i> المرسِلون: {{ snames|join(' · ') }}{% endif %}
-    {% if (t.reply_body or '').strip() %}<span style="color:#b26a00;margin-inline-start:6px"><i class="bi bi-robot"></i> له رد خاص</span>{% endif %}
-    {% set am = (tpl_atts.get(t.id) or {}).get('msg') or [] %}
-    {% set ar = (tpl_atts.get(t.id) or {}).get('reply') or [] %}
+    <a class="mt-reply-toggle {{ 'off' if t.no_reply else 'on' }}"
+       href="{{ url_for('template_toggle_reply', tid=t.id) }}"
+       title="اضغط للتبديل بين رد الموظفين وبدون رد">
+     {% if t.no_reply %}<i class="bi bi-bell-slash-fill"></i> بدون رد
+     {% else %}<i class="bi bi-chat-dots-fill"></i> رد مُفعّل{% endif %}</a>
+    {% if sent_counts.get(t.id) %}<span class="mt-sent"><i class="bi bi-send-fill"></i> اتبعت {{ sent_counts.get(t.id) }} مرة</span>{% endif %}
     {% if am or ar %}<span class="mt-att-badge" title="مرفقات الرسالة {{ am|length }} / مرفقات الرد {{ ar|length }}"><i class="bi bi-paperclip"></i> {{ am|length + ar|length }}</span>{% endif %}
+    {% if (t.reply_body or '').strip() %}<span class="mt-mini-badge" style="color:#b26a00;background:#fff4e0;border-color:#f0d39a"><i class="bi bi-robot"></i> رد خاص</span>{% endif %}
    </div>
-   <form method="POST" action="{{ url_for('edit_template', tid=t.id) }}">
-    <div class="mt-lbl">اسم القالب</div>
-    <input name="name" class="mt-inp" value="{{ t.name }}">
-    <div class="mt-lbl">نص الرسالة</div>
-    <textarea name="body" class="mt-inp" rows="5">{{ t.body }}</textarea>
-    <div class="mt-actions">
-     <button class="mt-save"><i class="bi bi-check-lg"></i> حفظ</button>
-     <a class="mt-del" href="{{ url_for('delete_template', tid=t.id) }}"
-        onclick="return confirm('حذف القالب؟')"><i class="bi bi-trash"></i> حذف</a>
-    </div>
-   </form>
+   {% if snames %}<div class="mt-senders"><i class="bi bi-send-check"></i> المرسِلون: {{ snames|join(' · ') }}</div>{% endif %}
   </div>
  {% else %}<p class="text-muted">لا توجد قوالب رسائل — اضغط «قالب رسالة جديد».</p>{% endfor %}
  </div>
+
+ {# نافذة تعديل القالب (الاسم + النص) — تفتح من اسم الكارت #}
+ {% for t in rows %}
+  <div class="modal fade" id="edt{{ t.id }}" tabindex="-1"><div class="modal-dialog modal-lg">
+   <div class="modal-content">
+    <form method="POST" action="{{ url_for('edit_template', tid=t.id) }}">
+     <div class="modal-header"><h5 class="modal-title">
+      <i class="bi bi-pencil-square text-primary"></i> {{ t.name }}</h5>
+      <button type="button" class="btn-close" data-bs-dismiss="modal"></button></div>
+     <div class="modal-body">
+      <div class="mb-2"><label class="fw-semibold mb-1">اسم القالب</label>
+       <input name="name" class="form-control" value="{{ t.name }}" required></div>
+      <div class="mb-2"><label class="fw-semibold mb-1">نص الرسالة</label>
+       <textarea name="body" class="form-control" rows="10"
+        style="font-family:'Consolas','Courier New',monospace">{{ t.body }}</textarea></div>
+      <div class="form-text">موضوع الإيميل = اسم القالب. المرسِلون والرد والمرفقات من «إرسال/استقبال».</div>
+     </div>
+     <div class="modal-footer justify-content-between">
+      <a class="btn btn-outline-danger" href="{{ url_for('delete_template', tid=t.id) }}"
+         onclick="return confirm('حذف القالب؟')"><i class="bi bi-trash"></i> حذف</a>
+      <button class="btn btn-primary"><i class="bi bi-check-lg"></i> حفظ</button>
+     </div>
+    </form>
+   </div></div></div>
+ {% endfor %}
 
  {# نافذة الإعداد لكل قالب: مين يبعت + رد الموظفين التلقائي عليه #}
  {% for t in rows %}
