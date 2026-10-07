@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.59"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.60"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4100,6 +4100,15 @@ ACCOUNTS_TPL = """
 
 EMPLOYEES_TPL = """
 {% extends "base.html" %}{% block content %}
+<style>
+ #empTable{font-size:.8rem}
+ #empTable td,#empTable th{padding:.3rem .45rem;vertical-align:middle;white-space:nowrap}
+ #empTable .badge{font-size:.68rem;font-weight:700}
+ #empTable .act{display:inline-flex;gap:3px;flex-wrap:nowrap}
+ #empTable .act .btn{--bs-btn-padding-y:.15rem;--bs-btn-padding-x:.4rem;--bs-btn-font-size:.78rem;
+   line-height:1;border-radius:6px}
+ #empTable .sigbtn{--bs-btn-padding-y:.1rem;--bs-btn-padding-x:.35rem;--bs-btn-font-size:.72rem}
+</style>
 <h2>الموظفون <span class="badge bg-secondary">{{ rows|length }}</span></h2>
 <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add">
@@ -4177,30 +4186,32 @@ EMPLOYEES_TPL = """
   <td>{{ e.department }}</td><td>{{ e.phone }}</td>
   <td class="small">{% if e.owner_email %}<span class="badge bg-info text-dark">{{ e.owner_name or e.owner_email }}</span>
       {% else %}<a class="text-muted" href="{{ url_for('distribution') }}">— تعيين —</a>{% endif %}</td>
-  <td><button type="button" class="btn btn-sm btn-outline-secondary"
+  <td><button type="button" class="btn btn-sm btn-outline-secondary sigbtn"
        onclick="showSig({{ e.id }}, '{{ e.name|replace("'", " ") }}')"
-       title="عرض التوقيع الفعلي"><i class="bi bi-eye"></i> عرض</button></td>
+       title="عرض التوقيع الفعلي"><i class="bi bi-eye"></i></button></td>
   <td><span class="status-dot {{ 'on' if e.emp_connected else 'off' }}">
       {{ 'متصل' if e.emp_connected else 'غير متصل' }}</span></td>
   <td><span class="badge bg-success" title="رسائل أرسلها">{{ (counts.get(e.email|lower) or {}).get('sent', 0) }}</span></td>
   <td><span class="badge bg-info text-dark" title="رسائل وصلته">{{ (counts.get(e.email|lower) or {}).get('inbox', 0) }}</span></td>
   <td>{{ '✔' if e.active else '✖' }}</td>
-  <td class="text-nowrap">
-   <a class="btn btn-sm btn-primary" href="{{ url_for('mail_view', kind='employee', oid=e.id, bare=1) }}"
-      target="_blank">
-    <i class="bi bi-envelope-open"></i> فتح البريد</a>
-   <button class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
-     data-bs-target="#ed{{ e.id }}">تعديل</button>
+  <td><div class="act">
+   <a class="btn btn-sm btn-primary" title="فتح البريد" target="_blank"
+      href="{{ url_for('mail_view', kind='employee', oid=e.id, bare=1) }}">
+    <i class="bi bi-envelope-open"></i></a>
+   <button class="btn btn-sm btn-outline-primary" title="تعديل" data-bs-toggle="modal"
+     data-bs-target="#ed{{ e.id }}"><i class="bi bi-pencil"></i></button>
    {% if e.password %}
-   <a class="btn btn-sm btn-outline-success" href="{{ url_for('connect_employee', eid=e.id) }}">
-    {{ 'تحديث الصندوق' if e.emp_connected else 'اتصال' }}</a>
+   <a class="btn btn-sm btn-outline-success" title="{{ 'تحديث الصندوق' if e.emp_connected else 'اتصال' }}"
+      href="{{ url_for('connect_employee', eid=e.id) }}"><i class="bi bi-plug"></i></a>
    {% endif %}
-   <a class="btn btn-sm btn-outline-info" href="{{ url_for('employee_make_login', eid=e.id) }}">لوج إن</a>
-   <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('toggle_employee', eid=e.id) }}">
-    {{ 'إيقاف' if e.active else 'تفعيل' }}</a>
-   <a class="btn btn-sm btn-danger" href="{{ url_for('delete_employee', eid=e.id) }}"
+   <a class="btn btn-sm btn-outline-info" title="لوج إن"
+      href="{{ url_for('employee_make_login', eid=e.id) }}"><i class="bi bi-key"></i></a>
+   <a class="btn btn-sm btn-outline-secondary" title="{{ 'إيقاف' if e.active else 'تفعيل' }}"
+      href="{{ url_for('toggle_employee', eid=e.id) }}">
+    <i class="bi {{ 'bi-pause-circle' if e.active else 'bi-play-circle' }}"></i></a>
+   <a class="btn btn-sm btn-danger" title="حذف" href="{{ url_for('delete_employee', eid=e.id) }}"
       onclick="return confirm('حذف الموظف؟')"><i class="bi bi-trash"></i></a>
-  </td>
+  </div></td>
  </tr>
  {% else %}<tr><td colspan="15" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
  </tbody>
