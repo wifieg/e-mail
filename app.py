@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.63"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.64"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -8622,6 +8622,22 @@ def login():
                 return redirect(nxt)
             return redirect(url_for("index") if u["role"] == "admin" else url_for("me"))
 
+        # مستخدم اسمه إيميل حساب مرسِل: يقبل كلمة سر الصندوق (المتغيّرة من «تعديل»)
+        if u and pw:
+            acc = conn.execute("SELECT password FROM accounts WHERE lower(email)=?",
+                               (username.lower(),)).fetchone()
+            if acc and acc["password"] and decrypt_secret(acc["password"]) == pw:
+                conn.execute("UPDATE users SET password_hash=? WHERE id=?",
+                             (hash_password(pw), u["id"]))
+                conn.commit()
+                conn.close()
+                session["uid"] = u["id"]
+                session.permanent = True
+                nxt = request.args.get("next") or ""
+                if nxt.startswith("/") and not nxt.startswith("//"):
+                    return redirect(nxt)
+                return redirect(url_for("index") if u["role"] == "admin" else url_for("me"))
+
         # دخول الموظف بإيميله وكلمة مرور صندوقه مباشرة (بدون إنشاء لوج إن يدوي)
         emp = conn.execute("SELECT * FROM employees WHERE lower(email)=? AND active=1",
                            (username.lower(),)).fetchone()
@@ -9332,6 +9348,9 @@ def edit_account(aid):
                          (enc, row["email"].lower()))
         except Exception:  # noqa: BLE001
             pass
+        # لو له مستخدم دخول بنفس الإيميل، كلمة سر الدخول تتغيّر معاه
+        conn.execute("UPDATE users SET password_hash=? WHERE LOWER(username)=?",
+                     (hash_password(new_pw), row["email"].lower()))
     conn.commit()
     conn.close()
     if not new_pw:
