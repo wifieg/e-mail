@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.64"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.65"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -11605,6 +11605,21 @@ def mail_compose(kind, oid):
                 send_date = datetime.strptime(raw_date[:16], "%Y-%m-%dT%H:%M")
             except ValueError:
                 send_date = None
+        # إيميل على دومين داخلي ومالوش صندوق = غلطة كتابة؛ السيرفر الداخلي كان بيقبله
+        # ويخزّنه في صندوق محدش بيفتحه، فنرفض الإرسال ونوضّح السبب.
+        conn = get_connection()
+        try:
+            unknown = [a for a in to_list + cc_list if _email_domain_internal(conn, a)]
+        finally:
+            conn.close()
+        if unknown:
+            known = _int_credentials()
+            unknown = [a for a in unknown if a.lower() not in known]
+        if unknown:
+            flash("الإيميل ده مش موجود في النظام — راجع الكتابة: %s" % ", ".join(unknown),
+                  "error")
+            return redirect(request.full_path)
+
         # رسالة يدوية: تروح للمستلمين المكتوبين بس، ومن غير رد تلقائي من الموظفين.
         # نحجز سطر في طابور الرد العكسي بحالة «manual» قبل الإرسال، فالفاحص يتجاهلها.
         try:
