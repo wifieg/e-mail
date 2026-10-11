@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.68"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.69"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -6825,7 +6825,7 @@ MAIL_TPL = """
  <div class="olx-stat-right">
   <span><i class="bi bi-check-circle-fill"></i> كل المجلدات محدّثة</span>
   <span class="sep">|</span>
-  <span><i class="bi bi-hdd-network"></i> متصل بـ: الخادم الداخلي</span>
+  <span><i class="bi bi-hdd-network"></i> متصل بالخادم</span>
   <span class="olx-viewicons">
    <i class="bi bi-list-ul" title="عرض عادي"></i>
    <i class="bi bi-layout-sidebar-reverse" title="عرض القراءة"></i>
