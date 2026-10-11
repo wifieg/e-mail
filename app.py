@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.67"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.68"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -1176,10 +1176,10 @@ _SIG_ICON_PATHS = {
 def _sig_icon(kind):
     """دائرة بإطار teal بداخلها أيقونة SVG."""
     d = _SIG_ICON_PATHS.get(kind, "")
-    svg = ('<svg width="14" height="14" viewBox="0 0 16 16" fill="%s" '
+    svg = ('<svg width="11" height="11" viewBox="0 0 16 16" fill="%s" '
            'style="vertical-align:middle"><path d="%s"/></svg>' % (SIG_TEAL, d)) if d else ""
-    return ('<span style="display:inline-block;width:30px;height:30px;border:1.5px solid %s;'
-            'border-radius:50%%;line-height:28px;text-align:center;vertical-align:middle">%s</span>'
+    return ('<span style="display:inline-block;width:22px;height:22px;border:1.5px solid %s;'
+            'border-radius:50%%;line-height:20px;text-align:center;vertical-align:middle">%s</span>'
             % (SIG_TEAL, svg))
 
 
@@ -1205,34 +1205,34 @@ def _rich_signature_html(entity, logo=""):
             return ""
         val = ('<a href="%s" style="color:%s;text-decoration:none">%s</a>' % (href, SIG_TEAL, text)
                ) if href else text
-        return ('<tr><td style="padding:4px 0;vertical-align:middle">%s</td>'
-                '<td style="padding:4px 12px;vertical-align:middle;font-size:14px;color:%s" '
+        return ('<tr><td style="padding:2px 0;vertical-align:middle">%s</td>'
+                '<td style="padding:2px 8px;vertical-align:middle;font-size:12px;color:%s" '
                 'dir="ltr">%s</td></tr>') % (_sig_icon(icon), SIG_TEAL, val)
 
     rows = (row("phone", phone) + row("mail", email, "mailto:%s" % email)
             + row("pin", dept) + row("web", website, web_href))
-    details = '<div style="font-size:30px;font-weight:bold;color:%s;line-height:1.05">%s</div>' % (
+    details = '<div style="font-size:20px;font-weight:bold;color:%s;line-height:1.1">%s</div>' % (
         SIG_TEAL, name)
     if title:
-        details += ('<div style="font-size:13px;letter-spacing:4px;color:%s;margin:5px 0 12px;'
+        details += ('<div style="font-size:11px;letter-spacing:2px;color:%s;margin:3px 0 8px;'
                     'text-transform:uppercase">%s</div>' % (SIG_TEAL, title))
     else:
-        details += '<div style="margin-bottom:12px"></div>'
+        details += '<div style="margin-bottom:8px"></div>'
     details += ('<table cellpadding="0" cellspacing="0" style="border-collapse:collapse">%s</table>'
                 % rows)
 
     left = ""
     if logo:
         left = ('<td style="vertical-align:middle;text-align:center;padding-right:6px">'
-                '<img src="%s" style="max-width:170px;max-height:130px;display:block" alt="logo">'
+                '<img src="%s" style="max-width:110px;max-height:85px;display:block" alt="logo">'
                 '</td>'
-                '<td style="padding:0 22px;vertical-align:middle">'
-                '<table cellpadding="0" cellspacing="0" style="height:130px"><tr>'
+                '<td style="padding:0 14px;vertical-align:middle">'
+                '<table cellpadding="0" cellspacing="0" style="height:85px"><tr>'
                 '<td style="border-left:2px solid %s;padding-left:5px"></td>'
                 '<td style="border-left:2px solid %s"></td></tr></table></td>') % (
                     logo, SIG_TEAL, SIG_TEAL)
     return ('<div dir="ltr" style="font-family:Arial,Helvetica,sans-serif;text-align:left">'
-            '<div style="font-size:20px;font-weight:bold;color:#1a1a1a;margin-bottom:14px">'
+            '<div style="font-size:15px;font-weight:bold;color:#1a1a1a;margin-bottom:8px">'
             'Thanks &amp; Best Regards</div>'
             '<table dir="ltr" cellpadding="0" cellspacing="0" style="border-collapse:collapse">'
             '<tr>%s<td style="vertical-align:middle">%s</td></tr></table></div>') % (left, details)
@@ -3362,7 +3362,7 @@ BASE_TPL = """
  .app-shell.full .olx-status{border:2px solid #b7c0d0;border-top:none}
  .app-shell.full .olx-fold a{padding:.34rem .7rem;font-size:.88rem}
  .app-shell.full .olx-fold a i{font-size:1.02rem}
- .app-shell.full .olx-fold .mbx{padding:8px 12px;font-size:.85rem}
+ .app-shell.full .olx-fold .mbx{padding:8px 12px;font-size:.82rem}
  .app-backdrop{display:none}
  .app-version{position:fixed;bottom:8px;left:10px;z-index:1000;font-size:.72rem;
    color:#8a94a6;background:rgba(255,255,255,.85);border:1px solid #e2e6ee;
@@ -3537,8 +3537,14 @@ BASE_TPL = """
    border:2px solid #b7c0d0;border-radius:12px;overflow:hidden;background:#fff;
    box-shadow:0 6px 24px rgba(20,40,80,.12)}
  .olx-fold{flex:0 0 220px;background:#faf9f8;border-inline-end:2px solid #c4ccda;overflow-y:auto}
- .olx-fold .mbx{padding:12px 14px;font-weight:700;font-size:.9rem;color:#201f1e;
-   border-bottom:1px solid #eaebec;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+ .olx-fold .mbx{padding:10px 14px;font-weight:700;font-size:.85rem;color:#201f1e;
+   border-bottom:1px solid #eaebec;direction:ltr;text-align:left;word-break:break-all;line-height:1.35}
+ .olx-fold .mbx i{color:#0f6cbd}
+ .olx-fsearch{display:flex;gap:4px;padding:8px 10px 6px}
+ .olx-fsearch input{flex:1;min-width:0;border:1px solid #d5dbe6;border-radius:6px;
+   padding:3px 8px;font-size:.8rem;height:28px;background:#fff}
+ .olx-fsearch button{border:1px solid #d5dbe6;background:#fff;color:#0f6cbd;border-radius:6px;
+   width:28px;height:28px;padding:0;font-size:.8rem}
  .olx-fold a{display:flex;align-items:center;gap:11px;padding:.6rem .85rem;color:#242424;
    font-size:.9rem;font-weight:600;border-inline-start:3px solid transparent}
  .olx-fold a i{font-size:1.2rem;color:#0f6cbd}
@@ -6700,7 +6706,12 @@ MAIL_TPL = """
 
 <div class="olx">
  <aside class="olx-fold">
-  <div class="mbx"><i class="bi bi-person-circle"></i> {{ meta.email }}</div>
+  <form class="olx-fsearch" method="GET" action="{{ url_for('mail_view', kind=kind, oid=oid, bare=bare) }}">
+   <input type="hidden" name="f" value="{{ folder }}">
+   <input name="q" value="{{ q }}" placeholder="بحث في الصندوق">
+   <button title="بحث"><i class="bi bi-search"></i></button>
+  </form>
+  <div class="mbx" title="{{ meta.email }}"><i class="bi bi-person-circle"></i> {{ meta.email }}</div>
   {% for f in folders %}
   <a class="{{ 'on' if f.name==folder }}"
      href="{{ url_for('mail_view', kind=kind, oid=oid, bare=bare, f=f.name) }}">
