@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.62"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.63"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -1331,7 +1331,8 @@ def internal_deliver_cc(from_email, from_name, to_email, cc_list, subject, body_
 
 
 def build_rich_message(account, to_list, cc_list, subject, body, attachments=None,
-                       in_reply_to=None, references=None, date_override=None, html_body=False):
+                       in_reply_to=None, references=None, date_override=None, html_body=False,
+                       message_id=None):
     """رسالة MIME كاملة: نص + مرفقات + ترويسات الرد (للاستخدام في واجهة البريد)."""
     msg = MIMEMultipart()
     display = (account["display_name"] if "display_name" in account.keys() else "") or ""
@@ -1342,7 +1343,7 @@ def build_rich_message(account, to_list, cc_list, subject, body, attachments=Non
         msg["Cc"] = ", ".join(cc_list)
     msg["Subject"] = str(make_header(decode_header(subject))) if subject else "(بدون موضوع)"
     try:
-        msg["Message-ID"] = make_msgid(domain=account["email"].split("@")[-1])
+        msg["Message-ID"] = message_id or make_msgid(domain=account["email"].split("@")[-1])
     except Exception:
         pass
     if date_override is not None:
@@ -1376,11 +1377,11 @@ def build_rich_message(account, to_list, cc_list, subject, body, attachments=Non
 
 def send_mail_full(account, to_list, cc_list, subject, body, attachments=None,
                    in_reply_to=None, references=None, sent_folder=None, date_override=None,
-                   html_body=False):
+                   html_body=False, message_id=None):
     """إرسال رسالة من واجهة البريد + حفظ نسخة في مجلد المُرسَل على السيرفر."""
     msg = build_rich_message(account, to_list, cc_list, subject, body, attachments,
                              in_reply_to, references, date_override=date_override,
-                             html_body=html_body)
+                             html_body=html_body, message_id=message_id)
     recipients = list(to_list) + list(cc_list or [])
     try:
         server = _smtp_connect(account)
@@ -11585,11 +11586,40 @@ def mail_compose(kind, oid):
                 send_date = datetime.strptime(raw_date[:16], "%Y-%m-%dT%H:%M")
             except ValueError:
                 send_date = None
+        # رسالة يدوية: تروح للمستلمين المكتوبين بس، ومن غير رد تلقائي من الموظفين.
+        # نحجز سطر في طابور الرد العكسي بحالة «manual» قبل الإرسال، فالفاحص يتجاهلها.
+        try:
+            manual_id = make_msgid(domain=(meta["email"] or "local").split("@")[-1])
+        except Exception:  # noqa: BLE001
+            manual_id = make_msgid(domain="internal.local")
+        rcpts_l = list(dict.fromkeys(a.lower() for a in to_list + cc_list))
+        conn = get_connection()
+        try:
+            marks = 0
+            if rcpts_l:
+                ph = ",".join("?" * len(rcpts_l))
+                for e in conn.execute(f"SELECT id FROM employees WHERE LOWER(email) IN ({ph})",
+                                      rcpts_l).fetchall():
+                    conn.execute("""INSERT OR IGNORE INTO reverse_queue
+                        (employee_id, account_email, folder, msgid, subject, status)
+                        VALUES (?, ?, 'inbox', ?, ?, 'manual')""",
+                        (e["id"], (meta["email"] or "").lower(), manual_id, subject))
+                    marks += 1
+            if marks:
+                conn.commit()
+        finally:
+            conn.close()
         ok, err = send_mail_full(acct, to_list, cc_list, subject, body, attachments=atts,
                                  in_reply_to=in_reply_to, references=refs,
                                  sent_folder=sent_folder or None, date_override=send_date,
-                                 html_body=is_html)
+                                 html_body=is_html, message_id=manual_id)
         if not ok:
+            if marks:
+                conn = get_connection()
+                conn.execute("DELETE FROM reverse_queue WHERE msgid=? AND status='manual'",
+                             (manual_id,))
+                conn.commit()
+                conn.close()
             flash("فشل الإرسال: %s" % err, "error")
             return redirect(request.full_path)
         if src and mode in ("reply", "replyall"):
