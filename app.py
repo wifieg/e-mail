@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.65"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.66"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -7101,7 +7101,12 @@ MAIL_COMPOSE_TPL = """
   <div class="sd-now" id="sdNow"></div>
   <label class="sd-lbl">الرسالة هتتبعت بتاريخ:</label>
   <input type="datetime-local" id="sdInput" class="sd-input">
+  {% if reply_date %}
+  <div class="sd-hint sd-reply"><i class="bi bi-reply-fill"></i> ده رد — هيتبعت بنفس تاريخ الرسالة الأصلية.
+   تقدر تغيّره لو عاوز.</div>
+  {% else %}
   <div class="sd-hint">سيبه زي ما هو للإرسال بالوقت الحالي، أو غيّره لتاريخ تاني.</div>
+  {% endif %}
   <div class="sd-btns">
    <button type="button" class="sd-ok" onclick="sdConfirm()"><i class="bi bi-send-fill"></i> إرسال</button>
    <button type="button" class="sd-no" onclick="sdClose()">إلغاء</button>
@@ -7120,6 +7125,7 @@ MAIL_COMPOSE_TPL = """
  .sd-lbl{font-size:.85rem;font-weight:700;color:#334;display:block;margin-bottom:4px}
  .sd-input{width:100%;border:1px solid #c4ccda;border-radius:8px;padding:8px 10px;font-size:.95rem}
  .sd-hint{font-size:.78rem;color:#6b7280;margin-top:6px}
+ .sd-reply{background:#fff7e6;color:#8a5a00;border-radius:8px;padding:6px 8px;font-weight:600}
  .sd-btns{display:flex;gap:8px;margin-top:18px}
  .sd-ok{flex:1;border:none;background:#0f6cbd;color:#fff;font-weight:700;border-radius:8px;padding:9px}
  .sd-ok:hover{background:#0c5aa0}
@@ -7170,8 +7176,9 @@ function _sdLocal(d){ return d.getFullYear()+'-'+_pad(d.getMonth()+1)+'-'+_pad(d
   +'T'+_pad(d.getHours())+':'+_pad(d.getMinutes()); }
 function _sdText(d){ return d.toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})
   +' — '+d.toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'}); }
+var _sdReplyDate = "{{ reply_date or '' }}";
 function sdOpen(){
- var now = new Date(), inp = document.getElementById('sdInput');
+ var now = _sdReplyDate ? new Date(_sdReplyDate) : new Date(), inp = document.getElementById('sdInput');
  inp.value = _sdLocal(now);
  document.getElementById('sdNow').textContent = _sdText(now);
  inp.oninput = function(){ if(inp.value) document.getElementById('sdNow').textContent = _sdText(new Date(inp.value)); };
@@ -11728,9 +11735,18 @@ def mail_compose(kind, oid):
         sig_block = ("\n" * 8 + sig_text) if sig_text else ""
         body = sig_block + (("\n\n" + quoted) if quoted else "")
 
+    # الرد يتبعت افتراضياً بتاريخ الرسالة الأصلية (+٥ دقايق عشان يظهر بعدها في المحادثة)
+    reply_date = ""
+    if src and mode in ("reply", "replyall") and src.get("date"):
+        try:
+            reply_date = (datetime.fromisoformat(src["date"])
+                          + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M")
+        except (TypeError, ValueError):
+            reply_date = ""
+
     return render("mail_compose.html", heading, kind=kind, oid=oid, meta=meta, folder=folder,
                   mode=mode, uid=uid, heading=heading, to=to, cc=cc, subject=subject,
-                  body=body, back=back, fwd_atts=fwd_atts)
+                  body=body, back=back, fwd_atts=fwd_atts, reply_date=reply_date)
 
 
 @app.route("/api/mailbox-counts/<kind>/<int:oid>")
