@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.66"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.67"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -7102,7 +7102,7 @@ MAIL_COMPOSE_TPL = """
   <label class="sd-lbl">الرسالة هتتبعت بتاريخ:</label>
   <input type="datetime-local" id="sdInput" class="sd-input">
   {% if reply_date %}
-  <div class="sd-hint sd-reply"><i class="bi bi-reply-fill"></i> ده رد — هيتبعت بنفس تاريخ الرسالة الأصلية.
+  <div class="sd-hint sd-reply"><i class="bi bi-reply-fill"></i> ده رد — هيتبعت بنفس تاريخ الرسالة الأصلية بعد نص ساعة من ميعادها.
    تقدر تغيّره لو عاوز.</div>
   {% else %}
   <div class="sd-hint">سيبه زي ما هو للإرسال بالوقت الحالي، أو غيّره لتاريخ تاني.</div>
@@ -11735,12 +11735,12 @@ def mail_compose(kind, oid):
         sig_block = ("\n" * 8 + sig_text) if sig_text else ""
         body = sig_block + (("\n\n" + quoted) if quoted else "")
 
-    # الرد يتبعت افتراضياً بتاريخ الرسالة الأصلية (+٥ دقايق عشان يظهر بعدها في المحادثة)
+    # الرد يتبعت افتراضياً بتاريخ الرسالة الأصلية بعد نص ساعة من ميعادها
     reply_date = ""
     if src and mode in ("reply", "replyall") and src.get("date"):
         try:
             reply_date = (datetime.fromisoformat(src["date"])
-                          + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M")
+                          + timedelta(minutes=30)).strftime("%Y-%m-%dT%H:%M")
         except (TypeError, ValueError):
             reply_date = ""
 
