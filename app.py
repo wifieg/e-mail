@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.60"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.61"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3975,6 +3975,15 @@ ACCOUNTS_TPL = """
   <div class="modal-body">
    <div class="mb-2"><label>الاسم الظاهر للمُرسِل</label>
     <input name="display_name" class="form-control" value="{{ a.display_name }}"></div>
+   <div class="mb-2"><label>كلمة السر الجديدة</label>
+    <div class="input-group">
+     <input name="new_password" type="password" class="form-control" autocomplete="new-password"
+            placeholder="سيبها فاضية لو مش عاوز تغيّرها">
+     <button type="button" class="btn btn-outline-secondary" title="إظهار/إخفاء"
+             onclick="var i=this.previousElementSibling;i.type=(i.type==='password'?'text':'password')">
+      <i class="bi bi-eye"></i></button>
+    </div>
+    <small class="text-muted">بعد الحفظ هيتم اختبار الاتصال بكلمة السر الجديدة تلقائياً.</small></div>
   </div>
   <div class="modal-footer"><button class="btn btn-primary">حفظ</button></div>
  </form>
@@ -7040,6 +7049,7 @@ MAIL_COMPOSE_TPL = """
 <form method="POST" enctype="multipart/form-data" class="cmp" onsubmit="return cmpSubmit()"
       action="{{ url_for('mail_compose', kind=kind, oid=oid, f=folder, uid=uid, mode=mode) }}">
  <input type="hidden" name="html" value="1">
+ <input type="hidden" name="send_date" id="sendDateField">
  <textarea name="body" id="bodyField" hidden></textarea>
  <div class="cmp-ribbon">
   <button class="cmp-send" type="submit"><i class="bi bi-send-fill"></i><span>إرسال</span></button>
@@ -7084,7 +7094,35 @@ MAIL_COMPOSE_TPL = """
  <div class="cmp-body" id="cmpEditor" contenteditable="true" dir="auto"></div>
  <textarea id="rawBody" hidden>{{ body }}</textarea>
 </form>
+<div class="sd-back" id="sdBack">
+ <div class="sd-box" role="dialog" aria-modal="true">
+  <div class="sd-title"><i class="bi bi-calendar-event"></i> تاريخ ووقت الإرسال</div>
+  <div class="sd-now" id="sdNow"></div>
+  <label class="sd-lbl">الرسالة هتتبعت بتاريخ:</label>
+  <input type="datetime-local" id="sdInput" class="sd-input">
+  <div class="sd-hint">سيبه زي ما هو للإرسال بالوقت الحالي، أو غيّره لتاريخ تاني.</div>
+  <div class="sd-btns">
+   <button type="button" class="sd-ok" onclick="sdConfirm()"><i class="bi bi-send-fill"></i> إرسال</button>
+   <button type="button" class="sd-no" onclick="sdClose()">إلغاء</button>
+  </div>
+ </div>
+</div>
 <style>
+ .sd-back{display:none;position:fixed;inset:0;background:rgba(15,25,45,.45);z-index:3000;
+   align-items:center;justify-content:center}
+ .sd-back.show{display:flex}
+ .sd-box{background:#fff;border-radius:14px;padding:22px 24px;width:min(380px,92vw);
+   box-shadow:0 18px 50px rgba(0,0,0,.25)}
+ .sd-title{font-weight:800;font-size:1.05rem;color:#0f6cbd;margin-bottom:10px}
+ .sd-now{background:#eef4fb;border-radius:10px;padding:10px 12px;font-weight:700;color:#242424;
+   margin-bottom:14px;font-size:.95rem}
+ .sd-lbl{font-size:.85rem;font-weight:700;color:#334;display:block;margin-bottom:4px}
+ .sd-input{width:100%;border:1px solid #c4ccda;border-radius:8px;padding:8px 10px;font-size:.95rem}
+ .sd-hint{font-size:.78rem;color:#6b7280;margin-top:6px}
+ .sd-btns{display:flex;gap:8px;margin-top:18px}
+ .sd-ok{flex:1;border:none;background:#0f6cbd;color:#fff;font-weight:700;border-radius:8px;padding:9px}
+ .sd-ok:hover{background:#0c5aa0}
+ .sd-no{border:1px solid #d5dbe6;background:#fff;color:#444;border-radius:8px;padding:9px 16px}
  .cmp{display:flex;flex-direction:column;height:calc(100vh - 130px);background:#fff;
    border:2px solid #b7c0d0;border-radius:14px;overflow:hidden;box-shadow:0 8px 30px rgba(20,40,80,.12)}
  .cmp-ribbon{display:flex;align-items:center;gap:10px;padding:10px 16px;border-bottom:1px solid #e6e8ee;
@@ -7125,10 +7163,34 @@ function cmpFiles(inp){
 function fmt(cmd, val){ document.getElementById('cmpEditor').focus();
  try{ document.execCommand(cmd, false, val||null); }catch(e){} }
 function _esc(s){ return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+var _sdConfirmed = false;
+function _pad(n){ return (n<10?'0':'')+n; }
+function _sdLocal(d){ return d.getFullYear()+'-'+_pad(d.getMonth()+1)+'-'+_pad(d.getDate())
+  +'T'+_pad(d.getHours())+':'+_pad(d.getMinutes()); }
+function _sdText(d){ return d.toLocaleDateString('ar-EG',{weekday:'long',year:'numeric',month:'long',day:'numeric'})
+  +' — '+d.toLocaleTimeString('ar-EG',{hour:'2-digit',minute:'2-digit'}); }
+function sdOpen(){
+ var now = new Date(), inp = document.getElementById('sdInput');
+ inp.value = _sdLocal(now);
+ document.getElementById('sdNow').textContent = _sdText(now);
+ inp.oninput = function(){ if(inp.value) document.getElementById('sdNow').textContent = _sdText(new Date(inp.value)); };
+ document.getElementById('sdBack').classList.add('show');
+}
+function sdClose(){ document.getElementById('sdBack').classList.remove('show'); }
+function sdConfirm(){
+ var v = document.getElementById('sdInput').value;
+ // لو المستخدم ماغيّرش الوقت (أو غيّره لدقيقة الحالية) نسيب السيرفر يحط الوقت الفعلي
+ document.getElementById('sendDateField').value = (v && v !== _sdLocal(new Date())) ? v : '';
+ _sdConfirmed = true; sdClose();
+ var f = document.querySelector('form.cmp');
+ if (cmpSubmit()) f.submit();
+}
 function cmpSubmit(){
  document.getElementById('bodyField').value = document.getElementById('cmpEditor').innerHTML;
+ if (!_sdConfirmed) { sdOpen(); return false; }
  return true;
 }
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') sdClose(); });
 document.addEventListener('DOMContentLoaded', function(){
  var raw = document.getElementById('rawBody').value || '';
  // لو التوقيع/النص فيه HTML اعرضه كما هو، وإلا حوّل الأسطر لـ <br>
@@ -9242,11 +9304,39 @@ def add_account():
 @app.route("/accounts/<int:aid>/edit", methods=["POST"])
 def edit_account(aid):
     conn = get_connection()
+    row = conn.execute("SELECT * FROM accounts WHERE id=?", (aid,)).fetchone()
+    if not row:
+        conn.close()
+        abort(404)
     conn.execute("UPDATE accounts SET display_name=? WHERE id=?",
                  (request.form.get("display_name", "").strip(), aid))
+    new_pw = request.form.get("new_password") or ""
+    if new_pw:
+        enc = encrypt_secret(new_pw)
+        conn.execute("UPDATE accounts SET password=? WHERE id=?", (enc, aid))
+        # السيرفر الداخلي يقرأ mail_boxes بعد accounts — نحدّثها كمان لو فيها نفس الإيميل
+        try:
+            conn.execute("UPDATE mail_boxes SET password=? WHERE LOWER(email)=?",
+                         (enc, row["email"].lower()))
+        except Exception:  # noqa: BLE001
+            pass
     conn.commit()
     conn.close()
-    flash("تم تحديث الاسم الظاهر", "success")
+    if not new_pw:
+        flash("تم تحديث الاسم الظاهر", "success")
+        return redirect(url_for("accounts"))
+
+    acct = dict(row, password=encrypt_secret(new_pw))
+    close_mail_sessions(dict(row))
+    _folders_cache.pop(_session_key(acct), None)
+    ok, msg = verify_account_full(acct)
+    conn = get_connection()
+    _set_account_verified(conn, aid, ok)
+    conn.close()
+    if ok:
+        flash(f"{row['email']}: تم تغيير كلمة السر والاتصال ناجح ✔", "success")
+    else:
+        flash(f"{row['email']}: اتحفظت كلمة السر الجديدة لكن الاتصال فشل — {msg}", "error")
     return redirect(url_for("accounts"))
 
 
@@ -11476,9 +11566,18 @@ def mail_compose(kind, oid):
         in_reply_to = src["message_id"] if (src and mode in ("reply", "replyall")) else None
         refs = " ".join(x for x in [(src or {}).get("references"), in_reply_to] if x) or None
         is_html = request.form.get("html") == "1"
+        # تاريخ الإرسال المختار من نافذة التأكيد (فاضي = الوقت الحالي)
+        send_date = None
+        raw_date = (request.form.get("send_date") or "").strip()
+        if raw_date:
+            try:
+                send_date = datetime.strptime(raw_date[:16], "%Y-%m-%dT%H:%M")
+            except ValueError:
+                send_date = None
         ok, err = send_mail_full(acct, to_list, cc_list, subject, body, attachments=atts,
                                  in_reply_to=in_reply_to, references=refs,
-                                 sent_folder=sent_folder or None, html_body=is_html)
+                                 sent_folder=sent_folder or None, date_override=send_date,
+                                 html_body=is_html)
         if not ok:
             flash("فشل الإرسال: %s" % err, "error")
             return redirect(request.full_path)
@@ -11488,7 +11587,9 @@ def mail_compose(kind, oid):
             except Exception as exc:  # noqa: BLE001
                 log.debug("تعليم \\Answered: %s", exc)
         _folders_cache.pop(_session_key(acct), None)
-        flash("تم إرسال الرسالة إلى %s" % ", ".join(to_list), "success")
+        flash("تم إرسال الرسالة إلى %s بتاريخ %s" % (
+            ", ".join(to_list), (send_date or datetime.now()).strftime("%d/%m/%Y %I:%M %p")),
+              "success")
         return redirect(back)
 
     # توقيع المرسِل تلقائياً من السيرفر (التصميم الاحترافي افتراضياً)
