@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.69"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.70"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -10452,9 +10452,10 @@ def _broadcast_recipients(conn, acc, tpl, missing_only=False):
     """مستلمو التعميم من حساب: موظفوه (أو كل الموظفين + الحسابات الرئيسية لو «تعميم»)."""
     is_bc = ("is_broadcast" in acc.keys() and acc["is_broadcast"])
     if is_bc:
+        # حساب التعميم (INFO): كل الموظفين النشطين — حتى الجديد اللي لسه ما اتوزّعش
+        # على حساب رئيسي، عشان أي موظف يتضاف يوصله التعميم تلقائياً
         emps = conn.execute(
-            "SELECT id, email FROM employees WHERE active=1 "
-            "AND owner_account_id IS NOT NULL").fetchall()
+            "SELECT id, email FROM employees WHERE active=1").fetchall()
     else:
         emps = conn.execute(
             "SELECT id, email FROM employees WHERE owner_account_id=? AND active=1",
@@ -10978,8 +10979,7 @@ def add_campaign():
         if not (_bc and _bc["is_broadcast"]):
             where.append("owner_account_id = ?")
             params.append(int(scope_acc))
-        else:
-            where.append("owner_account_id IS NOT NULL")
+        # حساب التعميم: بدون فلتر — كل الموظفين النشطين (بما فيهم غير الموزّعين)
     emps = cur.execute("SELECT id FROM employees WHERE " + " AND ".join(where), params).fetchall()
 
     cur.executemany("INSERT OR IGNORE INTO campaign_recipients (campaign_id, employee_id) VALUES (?, ?)",
