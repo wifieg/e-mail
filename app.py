@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.70"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.71"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -312,6 +312,9 @@ class _PgCursor:
         return self._c.fetchone()
     def fetchall(self):
         return self._c.fetchall()
+    def __iter__(self):
+        # يسمح بـ «for row in conn.execute(...)» زي sqlite3 (كان بيعمل 500 على Postgres)
+        return iter(self._c.fetchall())
     @property
     def rowcount(self):
         return self._c.rowcount
@@ -4126,6 +4129,16 @@ EMPLOYEES_TPL = """
  #empTable .sigbtn{--bs-btn-padding-y:.1rem;--bs-btn-padding-x:.35rem;--bs-btn-font-size:.72rem}
 </style>
 <h2>الموظفون <span class="badge bg-secondary">{{ rows|length }}</span></h2>
+{% if iqama_dups %}
+<div class="alert alert-danger py-2">
+ <b><i class="bi bi-exclamation-octagon-fill"></i> فيه {{ iqama_dups|length }} رقم إقامة/هوية مكرر
+  — صلّحهم (عدّل الرقم الغلط) عشان كل رقم يبقى لموظف واحد بس:</b>
+ <ul class="mb-0 small mt-1">
+  {% for q, ems in iqama_dups %}<li dir="ltr" style="text-align:right">
+   <b>{{ q }}</b> ← {{ ems|join(' ، ') }}</li>{% endfor %}
+ </ul>
+</div>
+{% endif %}
 <div class="d-flex gap-2 mb-3 flex-wrap align-items-center">
  <button class="btn btn-primary" data-bs-toggle="modal" data-bs-target="#add">
   <i class="bi bi-plus-circle"></i> إضافة موظف</button>
@@ -8513,6 +8526,12 @@ def mailbox_add(did):
         conn.close()
         flash("الإيميل مُضاف مسبقاً", "error")
         return redirect(url_for("domains_page"))
+    if role != "main":
+        other = _iqama_owner(conn, f.get("iqama", ""))
+        if other:
+            conn.close()
+            flash(_iqama_dup_msg(_norm_iqama(f.get("iqama", "")), other), "error")
+            return redirect(url_for("domains_page"))
 
     if role == "main":
         # يروح «الحسابات المرسِلة» — إعدادات سيرفر البريد المحلي (نفس الجهاز)
@@ -8541,7 +8560,7 @@ def mailbox_add(did):
                iqama, emp_number)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             (display_name or local, email, signature, logo, enc_pw, owner_id,
-             f.get("iqama", "").strip(), f.get("emp_number", "").strip()))
+             _norm_iqama(f.get("iqama", "")), f.get("emp_number", "").strip()))
         conn.commit()
         conn.close()
         if owner_id:
@@ -9456,8 +9475,10 @@ def employees():
                            ORDER BY e.name""").fetchall()
     accs = conn.execute("SELECT id, email, display_name FROM accounts ORDER BY id").fetchall()
     counts = _mailbox_msg_counts(conn)
+    iqama_dups = _iqama_duplicates(conn)
     conn.close()
-    return render("employees.html", "الموظفين", rows=rows, accs=accs, counts=counts)
+    return render("employees.html", "الموظفين", rows=rows, accs=accs, counts=counts,
+                  iqama_dups=iqama_dups)
 
 
 @app.route("/employees/bulk", methods=["POST"])
@@ -9554,27 +9575,95 @@ def employees_bulk():
     return redirect(url_for("employees"))
 
 
+_AR_DIGITS = str.maketrans("٠١٢٣٤٥٦٧٨٩۰۱۲۳۴۵۶۷۸۹", "01234567890123456789")
+
+
+def _norm_iqama(v):
+    """توحيد رقم الإقامة/الهوية: أرقام لاتينية، بدون مسافات، وبدون ‎.0‎ اللي بيضيفها الإكسل."""
+    s = str(v or "").translate(_AR_DIGITS).strip().replace(" ", "")
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+    return s
+
+
+def _iqama_owner(conn, iqama, exclude_id=None, exclude_email=None):
+    """لو رقم الإقامة/الهوية مسجّل لموظف تاني يرجّع صفّه (name, email)، وإلا None."""
+    iqama = _norm_iqama(iqama)
+    if not iqama:
+        return None
+    sql = "SELECT id, name, email FROM employees WHERE replace(trim(iqama),' ','')=?"
+    params = [iqama]
+    if exclude_id is not None:
+        sql += " AND id<>?"
+        params.append(exclude_id)
+    if exclude_email:
+        sql += " AND lower(email)<>lower(?)"
+        params.append(exclude_email)
+    return conn.execute(sql + " LIMIT 1", params).fetchone()
+
+
+def _iqama_dup_msg(iqama, other):
+    return ("رقم الإقامة/الهوية %s مسجّل بالفعل للموظف «%s» (%s) — مينفعش يتكرر."
+            % (iqama, other["name"], other["email"]))
+
+
+def _iqama_duplicates(conn):
+    """الأرقام المكررة الموجودة حالياً: [(الرقم، [إيميلات])]."""
+    out = {}
+    for r in conn.execute("SELECT replace(trim(iqama),' ','') q, email FROM employees "
+                          "WHERE trim(COALESCE(iqama,''))<>'' ORDER BY id").fetchall():
+        out.setdefault(_norm_iqama(r["q"]), []).append(r["email"])
+    return [(k, v) for k, v in out.items() if k and len(v) > 1]
+
+
+def _ensure_iqama_unique_index():
+    """حماية على مستوى قاعدة البيانات: فهرس فريد لرقم الإقامة (لو مفيش تكرار قديم يمنعه).
+    اتصال مستقل عشان فشله (بسبب تكرار قديم) ما يأثرش على أي حاجة تانية."""
+    conn = get_connection()
+    try:
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_emp_iqama_unique "
+                     "ON employees(iqama) WHERE iqama <> ''")
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("فهرس تفرّد رقم الإقامة لم يُنشأ (فيه تكرار قديم لازم يتصلّح): %s", exc)
+    finally:
+        conn.close()
+
+
 @app.route("/employees/add", methods=["POST"])
 def add_employee():
     f = request.form
     pw = f.get("password", "") or DEFAULT_MAILBOX_PASS   # افتراضية 022001 لو فاضية
     # التوقيع اختياري: لو فاضي، الموظف بياخد توقيع الحساب الرئيسي تلقائياً
     signature = f.get("signature", "").strip()
+    email = f["email"].strip().lower()
+    iqama = _norm_iqama(f.get("iqama", ""))
+    conn = get_connection()
+    if conn.execute("SELECT 1 FROM employees WHERE lower(email)=?", (email,)).fetchone():
+        conn.close()
+        flash("هذا البريد مُضاف مسبقاً", "error")
+        return redirect(url_for("employees"))
+    other = _iqama_owner(conn, iqama)
+    if other:
+        conn.close()
+        flash(_iqama_dup_msg(iqama, other), "error")
+        return redirect(url_for("employees"))
     try:
-        conn = get_connection()
         conn.execute("""INSERT INTO employees (name, email, title, department, phone, password,
                         signature, iqama, emp_number)
                         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-                     (f["name"].strip(), f["email"].strip().lower(),
+                     (f["name"].strip(), email,
                       f.get("title", "").strip(), f.get("department", "").strip(),
                       f.get("phone", "").strip(),
                       encrypt_secret(pw), signature,
-                      f.get("iqama", "").strip(), f.get("emp_number", "").strip()))
+                      iqama, f.get("emp_number", "").strip()))
         conn.commit()
-        conn.close()
         flash("تمت إضافة الموظف", "success")
-    except sqlite3.IntegrityError:
-        flash("هذا البريد مُضاف مسبقاً", "error")
+    except Exception as exc:  # noqa: BLE001
+        log.warning("add_employee: %s", exc)
+        flash("تعذّرت الإضافة — البريد أو رقم الإقامة مكرر", "error")
+    finally:
+        conn.close()
     return redirect(url_for("employees"))
 
 
@@ -9585,8 +9674,13 @@ def edit_employee(eid):
     signature = f.get("signature", "").strip()
     try:
         conn = get_connection()
-        iqama = f.get("iqama", "").strip()
+        iqama = _norm_iqama(f.get("iqama", ""))
         emp_number = f.get("emp_number", "").strip()
+        other = _iqama_owner(conn, iqama, exclude_id=eid)
+        if other:
+            conn.close()
+            flash(_iqama_dup_msg(iqama, other), "error")
+            return redirect(url_for("employees"))
         if signature:   # التوقيع لا يُمسح أبداً — يُحدَّث فقط لو أُدخلت قيمة جديدة
             conn.execute("""UPDATE employees SET name=?, email=?, title=?, department=?,
                             phone=?, iqama=?, emp_number=?, signature=? WHERE id=?""",
@@ -9605,8 +9699,9 @@ def edit_employee(eid):
         conn.commit()
         conn.close()
         flash("تم تحديث الموظف", "success")
-    except sqlite3.IntegrityError:
-        flash("البريد مستخدم لموظف آخر", "error")
+    except Exception as exc:  # noqa: BLE001  (sqlite/psycopg IntegrityError)
+        log.warning("edit_employee: %s", exc)
+        flash("تعذّر الحفظ — البريد أو رقم الإقامة مستخدم لموظف آخر", "error")
     return redirect(url_for("employees"))
 
 
@@ -9673,6 +9768,8 @@ def import_employees():
     skipped_rows = []       # (رقم الصف، السبب)
     dup_rows = []           # صفوف إيميلها مكرر داخل نفس الملف
     seen_emails = {}        # email → رقم أول صف ظهر فيه
+    seen_iqamas = {}        # رقم الإقامة → (أول صف، إيميله)
+    iq_dup_rows = []        # صفوف اتخطّت لأن رقم الإقامة مكرر
 
     # وضع العناوين: لو أول صف فيه أسماء أعمدة معروفة (name+email) نقرأ حسبها
     colmap = _import_colmap(all_rows[0]) if all_rows else {}
@@ -9714,6 +9811,20 @@ def import_employees():
             skipped += 1
             skipped_rows.append((rownum, "بريد غير صالح" + (": " + email if email else " (فاضي)")))
             continue
+        # رقم الإقامة/الهوية ممنوع يتكرر: داخل الملف أو مع موظف تاني (إيميل مختلف)
+        iqama = _norm_iqama(iqama)
+        if iqama:
+            first = seen_iqamas.get(iqama)
+            if first and first[1] != email:
+                skipped += 1
+                iq_dup_rows.append((rownum, iqama, "مكرر في الملف (صف %d)" % first[0]))
+                continue
+            other = _iqama_owner(cur, iqama, exclude_email=email)
+            if other:
+                skipped += 1
+                iq_dup_rows.append((rownum, iqama, "مسجّل لـ %s" % other["email"]))
+                continue
+            seen_iqamas.setdefault(iqama, (rownum, email))
         if email in seen_emails:
             dup_rows.append((rownum, email, seen_emails[email]))
         else:
@@ -9742,7 +9853,10 @@ def import_employees():
     if skipped_rows:
         ex = "، ".join("صف %d: %s" % (r, why) for r, why in skipped_rows[:5])
         msg += " · المتخطّى: " + ex
-    flash(msg, "success" if not (dup_rows or skipped_rows) else "warning")
+    if iq_dup_rows:
+        ex = "، ".join("صف %d (%s — %s)" % (r, q, why) for r, q, why in iq_dup_rows[:5])
+        msg += " · ⛔ %d صف اتخطّى لأن رقم الإقامة/الهوية مكرر: %s" % (len(iq_dup_rows), ex)
+    flash(msg, "success" if not (dup_rows or skipped_rows or iq_dup_rows) else "warning")
     return redirect(url_for("employees"))
 
 
@@ -13040,6 +13154,7 @@ def start_internal_mail_servers():
 
 def main():
     init_db()
+    _ensure_iqama_unique_index()   # رقم الإقامة/الهوية فريد على مستوى قاعدة البيانات
     # إعادة التحميل التلقائي (بدون إيقاف يدوي): EM_RELOAD=1 يفعّلها.
     # نشغّل السيرفر الداخلي + الجدولة في عملية الـworker فقط (مش عملية المراقبة)
     # عشان ما يحصلش تعارض على منافذ SMTP/IMAP.
