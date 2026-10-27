@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.75"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.76"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -2881,9 +2881,17 @@ def scan_reverse_internal(conn):
             sender = (m["from_email"] or "").lower()
             if sender not in senders:
                 continue
-            # الموظف يرد فقط على حسابه الرئيسي المالك له
+            # الموظف يرد فقط على حسابه الرئيسي المالك له — إلا لو الرسالة من حملة
+            # اتختار لها حساب إرسال صريح (في بوب-أب الإرسال): ساعتها الرد يروح للحساب ده
             if owner and senders.get(sender) != owner:
-                continue
+                cid_ = m["campaign_id"] if "campaign_id" in m.keys() else None
+                explicit = None
+                if cid_:
+                    _rr = conn.execute("SELECT sender_account_id FROM campaigns WHERE id=?",
+                                       (cid_,)).fetchone()
+                    explicit = _rr["sender_account_id"] if _rr else None
+                if not (explicit and explicit == senders.get(sender)):
+                    continue
             msgid = m["msg_id"] or ("imsg:%d" % m["id"])
             if conn.execute("SELECT 1 FROM emp_replies WHERE employee_id=? AND in_reply_to=?",
                             (emp["id"], msgid)).fetchone():
