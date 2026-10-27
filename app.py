@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.74"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.75"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4707,6 +4707,9 @@ MSG_TEMPLATES_TPL = """
  .pick-item:hover{background:#eaf3fc;border-color:#0f6cbd}
  .pick-item span{color:#6b7280;font-size:.74rem;direction:ltr;unicode-bidi:embed}
  .pick-item em{color:#0a7d33;font-style:normal;font-size:.7rem}
+ .pick-item{display:flex;align-items:center;gap:6px}
+ .pick-add{margin-inline-start:auto;font-style:normal;font-size:.72rem;font-weight:800;
+   color:#fff;background:#0f6cbd;border-radius:20px;padding:1px 9px;white-space:nowrap}
  .pick-none{font-size:.76rem;color:#8a93a5;padding:2px 4px}
  .pick-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
  .pick-chip{display:inline-flex;align-items:center;gap:5px;background:#0f6cbd;color:#fff;
@@ -4948,6 +4951,7 @@ MSG_TEMPLATES_TPL = """
        <div class="pick-res"></div>
        <div class="pick-chips"></div>
        <div class="form-text pick-hint">لو اخترت أفراد، الإرسال يروح <b>ليهم بس</b> بدل المجموعة كلها.</div>
+       <div class="form-text">اكتب الاسم ← اضغط <b>«➕ إضافة»</b> ← اكتب اللي بعده وهكذا (تقدر تضيف أي عدد).</div>
       </div>
       <label class="small d-flex align-items-center gap-2 mb-2"
              style="background:#fff8e6;border:1px solid #f0d98a;border-radius:7px;padding:6px 10px">
@@ -5008,7 +5012,8 @@ MSG_TEMPLATES_TPL = """
        hits.forEach(function(p){
          var b = document.createElement('button'); b.type = 'button'; b.className = 'pick-item';
          b.innerHTML = '<b>'+esc(p.n)+'</b> <span>'+esc(p.e)+'</span>' +
-                       (p.d ? ' <em>'+esc(p.d)+'</em>' : '');
+                       (p.d ? ' <em>'+esc(p.d)+'</em>' : '') +
+                      '<i class="pick-add">➕ إضافة</i>';
          b.onclick = function(){ addChip(box, p); q.value = ''; res.innerHTML = ''; q.focus(); };
          res.appendChild(b);
        });
