@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.72"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.74"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -757,6 +757,9 @@ def init_db():
     for col in ("send_date", "send_time", "reply_date", "reply_time"):
         if col not in camp_cols:
             cur.execute(f"ALTER TABLE campaigns ADD COLUMN {col} TEXT NOT NULL DEFAULT ''")
+    if "sender_account_id" not in camp_cols:
+        # حساب إرسال صريح للحملة (لو اتختار حساب في البوب-أب) — بيتغلّب على حساب الموظف
+        cur.execute("ALTER TABLE campaigns ADD COLUMN sender_account_id INTEGER")
 
     # ربط رسالة الحملة بصندوق الموظف (لتحديد تاريخ الرد من الحملة نفسها)
     mm_cols = _table_columns(cur, "mail_messages")
@@ -2541,7 +2544,8 @@ def _process_batch_core(conn, limit):
         SELECT r.id AS rid, r.campaign_id, r.employee_id, e.owner_account_id,
                e.name, e.email, e.title, e.department, e.phone, e.signature,
                t.id AS tpl_id, t.subject, t.body, t.signature AS tpl_signature, t.no_reply,
-               c.send_date AS c_send_date, c.send_time AS c_send_time
+               c.send_date AS c_send_date, c.send_time AS c_send_time,
+               c.sender_account_id AS c_sender
         FROM campaign_recipients r
         JOIN campaigns c ON c.id = r.campaign_id
         JOIN employees e ON e.id = r.employee_id
@@ -2592,8 +2596,10 @@ def _process_batch_core(conn, limit):
             stop_reason = "توقّفت الدفعة: كل الحسابات وصلت الحد المسموح به"
             break
 
+        # لو الحملة ليها حساب إرسال صريح (اتختار في البوب-أب، زي INFO) → منه هو
+        c_sender = row["c_sender"] if "c_sender" in row.keys() else None
         # الموظف المرتبط بحساب مسؤول يُرسَل منه هو فقط
-        owner_id = row["owner_account_id"]
+        owner_id = c_sender if (c_sender and c_sender in by_id) else row["owner_account_id"]
         if owner_id and owner_id in by_id:
             if not any(a["id"] == owner_id for a in available):
                 skipped += 1          # حسابه المسؤول بلغ حدّه — يُؤجَّل للدورة القادمة
@@ -4907,7 +4913,7 @@ MSG_TEMPLATES_TPL = """
   <div class="modal fade" id="snd{{ t.id }}" tabindex="-1"><div class="modal-dialog">
    <div class="modal-content">
     <form method="POST" action="{{ url_for('add_campaign') }}"
-          onsubmit="var bs=this.querySelectorAll('button');for(var i=0;i<bs.length;i++){bs[i].disabled=true;}setTimeout(function(){for(var j=0;j<bs.length;j++){bs[j].disabled=false;}},6000);return true;">
+          onsubmit="return sndGuard(this)">
      <input type="hidden" name="template_id" value="{{ t.id }}">
      <div class="modal-header">
       <h5 class="modal-title"><i class="bi bi-send-fill text-primary"></i> إرسال: {{ t.name }}</h5>
@@ -5012,6 +5018,38 @@ MSG_TEMPLATES_TPL = """
        if(ev.key === 'Enter'){ ev.preventDefault(); var f = res.querySelector('.pick-item'); if(f) f.click(); }
      });
    });
+   // حماية قبل الإرسال: نص مكتوب في البحث من غير ما يتختار = ممنوع يبعت للكل بالغلط
+   window.sndGuard = function(form){
+     var box = form.querySelector('.pick-box');
+     if(box){
+       var q = box.querySelector('.pick-q'), txt = norm(q.value).trim();
+       var chips = box.querySelectorAll('.pick-chip').length;
+       if(txt){
+         var exact = PEOPLE.filter(function(p){ return norm(p.e)===txt || norm(p.q)===txt; });
+         var hits = PEOPLE.filter(function(p){
+           return norm(p.n).indexOf(txt)>-1 || norm(p.e).indexOf(txt)>-1 ||
+                  norm(p.q).indexOf(txt)>-1; });
+         var one = exact.length===1 ? exact[0] : (hits.length===1 ? hits[0] : null);
+         if(one){                                   // نتيجة واحدة بالظبط → نضيفها تلقائياً
+           addChip(box, one); q.value=''; box.querySelector('.pick-res').innerHTML=''; chips++;
+         } else {
+           alert('كاتب «'+q.value+'» في خانة البحث بس ما اخترتش الشخص.\\n\\n'
+                 +'اضغط على اسمه من النتايج عشان يتضاف (يظهر كبادچ أزرق)، وبعدين ابعت.');
+           q.focus(); return false;
+         }
+       }
+       if(!chips){
+         var sel = form.querySelector('select[name=scope_account]');
+         var who = sel ? sel.options[sel.selectedIndex].text.replace(/\\s+/g,' ').trim() : '';
+         if(!confirm('مااخترتش أفراد محددين — الإرسال هيروح للمجموعة كلها'
+                     + (who ? ' («'+who+'»)' : '') + '.\\n\\nمتأكد إنك عايز تبعت للكل؟')) return false;
+       } else if(!confirm('هيتبعت لـ '+chips+' فرد محدد بس. تمام؟')) return false;
+     }
+     var bs = form.querySelectorAll('button');
+     for(var i=0;i<bs.length;i++){ bs[i].disabled = true; }
+     setTimeout(function(){ for(var j=0;j<bs.length;j++){ bs[j].disabled = false; } }, 6000);
+     return true;
+   };
  })();
  // اضبط ساعات الإرسال/الرد على الآن (توقيت السعودية) في كل نوافذ الإرسال
  (function(){try{
@@ -5253,8 +5291,12 @@ CAMPAIGNS_TPL = """
    {% elif c.status=='paused' %}
     <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('campaign_action', cid=c.id, act='resume') }}">استئناف</a>
    {% endif %}
+   <a class="btn btn-sm btn-outline-danger" href="{{ url_for('campaign_action', cid=c.id, act='retract') }}"
+      title="يوقف الحملة ويمسح رسايلها من صناديق كل الموظفين"
+      onclick="return confirm('⚠️ سحب الحملة «{{ c.name }}»؟\\n\\n• هتتوقف فورًا.\\n• الرسايل اللي اتبعتت منها هتتمسح من صناديق كل الموظفين، ومعاها الردود.\\n• الحملة نفسها هتتمسح.\\n\\nبياخد نسخة أمان قبلها. متأكد؟')">
+    <i class="bi bi-arrow-counterclockwise"></i> سحب الرسائل</a>
    <a class="btn btn-sm btn-danger" href="{{ url_for('campaign_action', cid=c.id, act='delete') }}"
-      onclick="return confirm('حذف الحملة؟')">حذف</a>
+      onclick="return confirm('حذف الحملة من القائمة بس؟ (الرسايل اللي اتبعتت هتفضل عند الموظفين — لو عايز تمسحها استخدم «سحب الرسائل»)')">حذف</a>
   </td>
  </tr>
  {% else %}<tr><td colspan="8" class="mlist-empty">لا توجد حملات</td></tr>{% endfor %}
@@ -11175,9 +11217,11 @@ def add_campaign():
     if not name:
         name = "%s — %s" % (valid_tpls[template_id], send_date)
 
+    # الحساب المختار في البوب-أب = حساب الإرسال الفعلي (مش بس فلتر للمستلمين)
+    sender_id = int(scope_acc) if scope_acc.isdigit() else None
     cur.execute("""INSERT INTO campaigns (name, template_id, send_date, send_time,
-                   reply_date, reply_time) VALUES (?, ?, ?, ?, ?, ?)""",
-                (name, template_id, send_date, send_time, reply_date, reply_time))
+                   reply_date, reply_time, sender_account_id) VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (name, template_id, send_date, send_time, reply_date, reply_time, sender_id))
     cid = cur.lastrowid
 
     # قوالب الأقسام
@@ -11268,6 +11312,37 @@ def campaign_action(cid, act):
         conn.close()
         flash("تم حذف الحملة", "info")
         return redirect(url_for("campaigns"))
+    elif act == "retract":
+        # سحب الحملة: إيقاف فوري + مسح الرسايل اللي اتبعتت منها من صناديق الكل + الردود
+        cur.execute("UPDATE campaigns SET status='paused' WHERE id=?", (cid,))
+        conn.commit()
+        try:
+            create_backup()
+        except Exception:  # noqa: BLE001
+            log.exception("safety backup before retract failed")
+        orig = {r["msg_id"] for r in cur.execute(
+            "SELECT DISTINCT msg_id FROM mail_messages WHERE campaign_id=? "
+            "AND msg_id IS NOT NULL", (cid,)).fetchall()}
+        replies = set()
+        for ch in _chunks(list(orig), 400):
+            ph = ",".join("?" * len(ch))
+            for r in cur.execute(f"SELECT DISTINCT msg_id FROM mail_messages "
+                                 f"WHERE in_reply_to IN ({ph}) AND msg_id IS NOT NULL",
+                                 ch).fetchall():
+                replies.add(r["msg_id"])
+        n_inbox = cur.execute("SELECT COUNT(*) c FROM mail_messages WHERE campaign_id=? "
+                              "AND folder='inbox'", (cid,)).fetchone()["c"]
+        _del_in(cur, "msg_attachments", "msg_id", orig | replies)
+        _del_in(cur, "reverse_queue", "msgid", orig)
+        _del_in(cur, "emp_replies", "in_reply_to", orig)
+        _del_in(cur, "mail_messages", "msg_id", orig | replies)
+        cur.execute("DELETE FROM sent_emails WHERE campaign_id=?", (cid,))
+        cur.execute("DELETE FROM campaigns WHERE id=?", (cid,))
+        conn.commit()
+        conn.close()
+        flash("تم سحب الحملة: اتوقفت واتمسحت من صناديق %d موظف (ومعاها الردود). "
+              "أُخذت نسخة أمان قبل السحب." % n_inbox, "success")
+        return redirect(url_for("campaigns"))
     elif act == "send_now":
         conn.commit()
         conn.close()
@@ -11318,9 +11393,11 @@ def campaign_duplicate(cid):
         abort(404)
     new_name = (c["name"] or "حملة") + " (نسخة)"
     cur.execute("""INSERT INTO campaigns (name, template_id, send_date, send_time,
-                   reply_date, reply_time, status) VALUES (?, ?, ?, ?, ?, ?, 'active')""",
+                   reply_date, reply_time, status, sender_account_id)
+                   VALUES (?, ?, ?, ?, ?, ?, 'active', ?)""",
                 (new_name, c["template_id"], c["send_date"], c["send_time"],
-                 c["reply_date"], c["reply_time"]))
+                 c["reply_date"], c["reply_time"],
+                 c["sender_account_id"] if "sender_account_id" in c.keys() else None))
     new_cid = cur.lastrowid
     # قوالب الأقسام
     for dt in cur.execute("SELECT department, template_id FROM campaign_dept_templates "
