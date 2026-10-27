@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.71"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.72"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4694,6 +4694,21 @@ MSG_TEMPLATES_TPL = """
    color:#5a6472;font-size:.7rem;font-weight:700;padding:3px 10px;border-radius:20px;
    text-decoration:none;white-space:nowrap}
  .mt-arch:hover{background:#e6eaf1;color:#334}
+ .pick-box{border:1px solid #cfe0f3;background:#f6faff;border-radius:8px;padding:8px 10px}
+ .pick-res{display:flex;flex-direction:column;gap:3px;margin-top:4px;max-height:210px;overflow:auto}
+ .pick-item{text-align:start;background:#fff;border:1px solid #dbe4f0;border-radius:6px;
+   padding:4px 8px;font-size:.8rem;cursor:pointer}
+ .pick-item:hover{background:#eaf3fc;border-color:#0f6cbd}
+ .pick-item span{color:#6b7280;font-size:.74rem;direction:ltr;unicode-bidi:embed}
+ .pick-item em{color:#0a7d33;font-style:normal;font-size:.7rem}
+ .pick-none{font-size:.76rem;color:#8a93a5;padding:2px 4px}
+ .pick-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+ .pick-chip{display:inline-flex;align-items:center;gap:5px;background:#0f6cbd;color:#fff;
+   border-radius:20px;padding:2px 6px 2px 10px;font-size:.76rem;font-weight:700}
+ .pick-chip small{opacity:.8;font-weight:400;direction:ltr;unicode-bidi:embed}
+ .pick-chip a{color:#fff;text-decoration:none;font-weight:800;font-size:1rem;line-height:1;
+   background:rgba(255,255,255,.2);border-radius:50%;width:18px;height:18px;display:inline-flex;
+   align-items:center;justify-content:center}
  .mt-tabs{display:flex;gap:6px}
  .mt-tab{display:inline-flex;align-items:center;gap:5px;font-size:.8rem;font-weight:700;
    padding:5px 12px;border-radius:8px;text-decoration:none;color:#5a6472;border:1px solid #d5dae4;
@@ -4919,6 +4934,15 @@ MSG_TEMPLATES_TPL = """
          <i class="bi bi-clock-history"></i> ساعة الرد</label>
         <input name="reply_time" type="time" class="form-control sndTime" value="12:00" required></div>
       </div>
+      <div class="pick-box mb-2">
+       <label class="small fw-semibold mb-1"><i class="bi bi-person-plus-fill text-primary"></i>
+        إرسال لأفراد محددين <span class="text-muted fw-normal">(اختياري)</span></label>
+       <input type="text" class="form-control form-control-sm pick-q" autocomplete="off"
+              placeholder="ابحث بالاسم أو الإيميل أو رقم الإقامة أو القسم…">
+       <div class="pick-res"></div>
+       <div class="pick-chips"></div>
+       <div class="form-text pick-hint">لو اخترت أفراد، الإرسال يروح <b>ليهم بس</b> بدل المجموعة كلها.</div>
+      </div>
       <label class="small d-flex align-items-center gap-2 mb-2"
              style="background:#fff8e6;border:1px solid #f0d98a;border-radius:7px;padding:6px 10px">
        <input type="checkbox" name="missing_only" value="1">
@@ -4943,6 +4967,52 @@ MSG_TEMPLATES_TPL = """
    </div></div></div>
  {% endfor %}
  <script>
+ // اختيار أفراد محددين بالبحث (قائمة واحدة مشتركة لكل نوافذ الإرسال)
+ (function(){
+   var PEOPLE = {{ pick_list|tojson }};
+   function norm(s){ return (s||'').toString().toLowerCase(); }
+   function esc(s){ return (s||'').toString().replace(/[&<>"]/g,function(c){
+     return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+   function refreshHint(box){
+     var n = box.querySelectorAll('.pick-chip').length;
+     var h = box.querySelector('.pick-hint');
+     if(h) h.innerHTML = n ? ('هيتبعت لـ <b>'+n+'</b> فرد محدد بس.') :
+       'لو اخترت أفراد، الإرسال يروح <b>ليهم بس</b> بدل المجموعة كلها.';
+   }
+   function addChip(box, p){
+     var chips = box.querySelector('.pick-chips');
+     if(chips.querySelector('[data-id="'+p.id+'"]')) return;
+     var c = document.createElement('span');
+     c.className = 'pick-chip'; c.setAttribute('data-id', p.id);
+     c.innerHTML = esc(p.n || p.e) + ' <small>'+esc(p.e)+'</small>' +
+       '<input type="hidden" name="pick" value="'+p.id+'">' +
+       '<a href="#" title="شيل">&times;</a>';
+     c.querySelector('a').onclick = function(ev){ ev.preventDefault(); c.remove(); refreshHint(box); };
+     chips.appendChild(c); refreshHint(box);
+   }
+   document.querySelectorAll('.pick-box').forEach(function(box){
+     var q = box.querySelector('.pick-q'), res = box.querySelector('.pick-res');
+     function render(){
+       var v = norm(q.value).trim(); res.innerHTML = '';
+       if(!v) return;
+       var hits = PEOPLE.filter(function(p){
+         return norm(p.n).indexOf(v)>-1 || norm(p.e).indexOf(v)>-1 ||
+                norm(p.q).indexOf(v)>-1 || norm(p.d).indexOf(v)>-1; }).slice(0, 8);
+       if(!hits.length){ res.innerHTML = '<div class="pick-none">مفيش نتايج</div>'; return; }
+       hits.forEach(function(p){
+         var b = document.createElement('button'); b.type = 'button'; b.className = 'pick-item';
+         b.innerHTML = '<b>'+esc(p.n)+'</b> <span>'+esc(p.e)+'</span>' +
+                       (p.d ? ' <em>'+esc(p.d)+'</em>' : '');
+         b.onclick = function(){ addChip(box, p); q.value = ''; res.innerHTML = ''; q.focus(); };
+         res.appendChild(b);
+       });
+     }
+     q.addEventListener('input', render);
+     q.addEventListener('keydown', function(ev){       // Enter = اختار أول نتيجة (ومايبعتش الفورم)
+       if(ev.key === 'Enter'){ ev.preventDefault(); var f = res.querySelector('.pick-item'); if(f) f.click(); }
+     });
+   });
+ })();
  // اضبط ساعات الإرسال/الرد على الآن (توقيت السعودية) في كل نوافذ الإرسال
  (function(){try{
    var now=new Date(new Date().toLocaleString('en-US',{timeZone:'Asia/Riyadh'}));
@@ -10307,9 +10377,15 @@ def message_templates_page():
         tpl_atts.setdefault(a["template_id"], {"msg": [], "reply": []}).setdefault(
             a["scope"], []).append(a)
     rctx = _reverse_ctx(conn)
+    # قائمة الأفراد للبحث والاختيار في بوب-أب الإرسال (تتبعت مرة واحدة للصفحة كلها)
+    pick_list = [{"id": r["id"], "n": r["name"] or "", "e": r["email"] or "",
+                  "q": r["iqama"] or "", "d": r["department"] or ""}
+                 for r in conn.execute("SELECT id, name, email, iqama, department FROM employees "
+                                       "WHERE active=1 ORDER BY name").fetchall()]
     conn.close()
     today = datetime.now().strftime("%Y-%m-%d")
     return render("msg_templates.html", "القوالب والردود التلقائية", rows=rows,
+                  pick_list=pick_list,
                   sent_counts=sent_counts, tpl_atts=tpl_atts, today=today,
                   view=view, archived_count=archived_count, active_count=active_count, **rctx)
 
@@ -10562,9 +10638,33 @@ def template_attachment_delete(aid):
     return redirect(url_for("message_templates_page"))
 
 
-def _broadcast_recipients(conn, acc, tpl, missing_only=False):
-    """مستلمو التعميم من حساب: موظفوه (أو كل الموظفين + الحسابات الرئيسية لو «تعميم»)."""
+def _picked_ids(form):
+    """أفراد مختارين يدوياً من خانة البحث في بوب-أب الإرسال (name="pick")."""
+    out = []
+    for x in form.getlist("pick"):
+        x = (x or "").strip()
+        if x.isdigit() and int(x) not in out:
+            out.append(int(x))
+    return out
+
+
+def _broadcast_recipients(conn, acc, tpl, missing_only=False, only_ids=None):
+    """مستلمو التعميم من حساب: موظفوه (أو كل الموظفين + الحسابات الرئيسية لو «تعميم»).
+    only_ids = أفراد محددين بالاسم → يروح ليهم بس."""
     is_bc = ("is_broadcast" in acc.keys() and acc["is_broadcast"])
+    if only_ids:
+        ph = ",".join("?" * len(only_ids))
+        emps = conn.execute(f"SELECT id, email FROM employees WHERE active=1 AND id IN ({ph})",
+                            list(only_ids)).fetchall()
+        recips = [(e["id"], e["email"]) for e in emps
+                  if _email_domain_internal(conn, e["email"])]
+        if missing_only:
+            got = {r["be"] for r in conn.execute(
+                "SELECT DISTINCT lower(box_email) be FROM mail_messages "
+                "WHERE folder='inbox' AND subject=? AND lower(from_email)=lower(?)",
+                (tpl["name"], acc["email"])).fetchall()}
+            recips = [(eid, em) for eid, em in recips if em.lower() not in got]
+        return recips
     if is_bc:
         # حساب التعميم (INFO): كل الموظفين النشطين — حتى الجديد اللي لسه ما اتوزّعش
         # على حساب رئيسي، عشان أي موظف يتضاف يوصله التعميم تلقائياً
@@ -10594,10 +10694,10 @@ def _broadcast_recipients(conn, acc, tpl, missing_only=False):
 
 
 def _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style,
-                         missing_only=False, allow_reply=False):
+                         missing_only=False, allow_reply=False, only_ids=None):
     """يبعت تعميم واحد (Bcc) من حساب، ويسجّله. يعيد عدد المستلمين (0 لو مفيش).
     allow_reply=False (الافتراضي) = بدون رد؛ True = يسمح للموظفين بالرد على التعميم."""
-    recips = _broadcast_recipients(conn, acc, tpl, missing_only)
+    recips = _broadcast_recipients(conn, acc, tpl, missing_only, only_ids)
     cc = [em for _, em in recips]
     if not cc:
         return 0
@@ -10656,14 +10756,16 @@ def template_send_cc(tid):
     send_time = (f.get("send_time", "") or "12:00").strip() or "12:00"
     missing_only = bool(f.get("missing_only"))
     allow_reply = bool(f.get("allow_reply"))
+    picks = _picked_ids(f)
     conn = get_connection()
     tpl = conn.execute("SELECT * FROM templates WHERE id=?", (tid,)).fetchone()
     if not tpl:
         conn.close()
         flash("القالب غير موجود", "error")
         return redirect(url_for("message_templates_page"))
-    # منع الإرسال المكرر لو اتضغط مرتين بسرعة (آخر تعميم لنفس القالب خلال 30 ثانية)
-    if _recent_broadcast(conn, tid, seconds=30):
+    # منع الإرسال المكرر لو اتضغط مرتين بسرعة (آخر تعميم لنفس القالب خلال 30 ثانية).
+    # الإرسال لأفراد محددين مستثنى (ممكن تبعت لفلان ثم علان ورا بعض) — والزرار بيتقفل بعد الضغط.
+    if not picks and _recent_broadcast(conn, tid, seconds=30):
         conn.close()
         flash("تم تجاهل الضغط المكرر — القالب ده اتبعت من ثواني. "
               "لو عايز تبعت تاني استنى شوية أو استخدم «إعادة إرسال».", "warning")
@@ -10676,12 +10778,16 @@ def template_send_cc(tid):
     att_ids = _tpl_att_ids(conn, "camp", tid, "msg")
     if scope_acc.isdigit():
         accounts = conn.execute("SELECT * FROM accounts WHERE id=?", (int(scope_acc),)).fetchall()
+    elif picks:
+        # أفراد محددين ومفيش حساب مختار: نبعت من حساب التعميم (INFO) وإلا أول حساب نشط
+        accounts = conn.execute("SELECT * FROM accounts WHERE active=1 "
+                                "ORDER BY is_broadcast DESC, id LIMIT 1").fetchall()
     else:
         accounts = conn.execute("SELECT * FROM accounts WHERE active=1 ORDER BY id").fetchall()
     n_mails = n_emp = 0
     for acc in accounts:
         c = _send_broadcast_once(conn, acc, tpl, send_dt, att_ids, sig_style,
-                                 missing_only, allow_reply)
+                                 missing_only, allow_reply, picks or None)
         if c:
             n_mails += 1
             n_emp += c
@@ -11083,6 +11189,12 @@ def add_campaign():
             dept_map += 1
 
     where, params = ["active=1"], []
+    picks = _picked_ids(f)
+    if picks:
+        # أفراد محددين بالاسم: الحملة تروح ليهم بس (بدل المجموعة/الفلتر)
+        where.append("id IN (%s)" % ",".join("?" * len(picks)))
+        params += picks
+        flt, scope_acc = "", ""
     if flt:
         where.append("(lower(name) LIKE ? OR lower(email) LIKE ? OR lower(department) LIKE ?)")
         params += [f"%{flt}%", f"%{flt}%", f"%{flt}%"]
