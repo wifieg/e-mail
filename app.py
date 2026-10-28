@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.79"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.80"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -4241,16 +4241,14 @@ EMPLOYEES_TPL = """
  <thead><tr>
    <th style="width:34px"><input type="checkbox" id="empAll" onclick="empToggleAll(this)"
        title="تحديد الكل"></th>
-   <th>الاسم</th><th>البريد</th><th>الإقامة</th><th>الرقم الوظيفي</th><th>المنصب</th><th>القسم</th><th>الهاتف</th>
-   <th>الحساب المسؤول</th><th>توقيع</th><th>الاتصال</th>
-   <th>مُرسَلة</th><th>مُستقبَلة</th><th>نشط</th><th>إجراءات</th></tr></thead>
+   <th>الاسم</th><th>البريد</th><th>الإقامة</th><th>المنصب</th><th>الهاتف</th>
+   <th>الحساب المسؤول</th><th>توقيع</th><th>الاتصال</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for e in rows %}
  <tr data-s="{{ (e.name ~ ' ' ~ e.email ~ ' ' ~ e.department ~ ' ' ~ e.title ~ ' ' ~ (e.iqama or '') ~ ' ' ~ (e.emp_number or ''))|lower }}">
   <td><input type="checkbox" class="emp-chk" value="{{ e.id }}" onclick="empSync()"></td>
   <td>{{ e.name }}</td><td dir="ltr" class="text-nowrap">{{ e.email }}</td>
-  <td dir="ltr">{{ e.iqama or '—' }}</td><td dir="ltr">{{ e.emp_number or '—' }}</td><td>{{ e.title }}</td>
-  <td>{{ e.department }}</td><td>{{ e.phone }}</td>
+  <td dir="ltr">{{ e.iqama or '—' }}</td><td>{{ e.title }}</td><td>{{ e.phone }}</td>
   <td class="small">{% if e.owner_email %}<span class="badge bg-info text-dark">{{ e.owner_name or e.owner_email }}</span>
       {% else %}<a class="text-muted" href="{{ url_for('distribution') }}">— تعيين —</a>{% endif %}</td>
   <td><button type="button" class="btn btn-sm btn-outline-secondary sigbtn"
@@ -4258,9 +4256,6 @@ EMPLOYEES_TPL = """
        title="عرض التوقيع الفعلي"><i class="bi bi-eye"></i></button></td>
   <td><span class="status-dot {{ 'on' if e.emp_connected else 'off' }}">
       {{ 'متصل' if e.emp_connected else 'غير متصل' }}</span></td>
-  <td><span class="badge bg-success" title="رسائل أرسلها">{{ (counts.get(e.email|lower) or {}).get('sent', 0) }}</span></td>
-  <td><span class="badge bg-info text-dark" title="رسائل وصلته">{{ (counts.get(e.email|lower) or {}).get('inbox', 0) }}</span></td>
-  <td>{{ '✔' if e.active else '✖' }}</td>
   <td><div class="act">
    <a class="btn btn-sm btn-primary" title="فتح البريد" target="_blank"
       href="{{ url_for('mail_view', kind='employee', oid=e.id, bare=1) }}">
@@ -4271,8 +4266,6 @@ EMPLOYEES_TPL = """
    <a class="btn btn-sm btn-outline-success" title="{{ 'تحديث الصندوق' if e.emp_connected else 'اتصال' }}"
       href="{{ url_for('connect_employee', eid=e.id) }}"><i class="bi bi-plug"></i></a>
    {% endif %}
-   <a class="btn btn-sm btn-outline-info" title="لوج إن"
-      href="{{ url_for('employee_make_login', eid=e.id) }}"><i class="bi bi-key"></i></a>
    <a class="btn btn-sm btn-outline-secondary" title="{{ 'إيقاف' if e.active else 'تفعيل' }}"
       href="{{ url_for('toggle_employee', eid=e.id) }}">
     <i class="bi {{ 'bi-pause-circle' if e.active else 'bi-play-circle' }}"></i></a>
@@ -4280,7 +4273,7 @@ EMPLOYEES_TPL = """
       onclick="return confirm('حذف الموظف؟')"><i class="bi bi-trash"></i></a>
   </div></td>
  </tr>
- {% else %}<tr><td colspan="15" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
+ {% else %}<tr><td colspan="10" class="text-muted">لا يوجد موظفون</td></tr>{% endfor %}
  </tbody>
 </table>
 </div>
