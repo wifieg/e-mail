@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.83"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.84"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -7293,9 +7293,13 @@ MAIL_COMPOSE_TPL = """
   <div class="cmp-row"><span class="cmp-lbl">من</span>
    <span class="cmp-from" dir="ltr">{{ meta.email }}</span></div>
   <div class="cmp-row"><span class="cmp-lbl">إلى</span>
-   <input name="to" value="{{ to }}" required placeholder="أدخل عناوين البريد مفصولة بفاصلة" dir="ltr"></div>
+   <div class="rcpt-wrap"><input name="to" class="rcpt" value="{{ to }}" required autocomplete="off"
+     placeholder="اضغط هنا وابحث بالاسم أو الإيميل أو رقم الإقامة…" dir="ltr">
+    <div class="rcpt-dd"></div></div></div>
   <div class="cmp-row"><span class="cmp-lbl">Cc</span>
-   <input name="cc" value="{{ cc }}" placeholder="نسخة (اختياري)" dir="ltr"></div>
+   <div class="rcpt-wrap"><input name="cc" class="rcpt" value="{{ cc }}" autocomplete="off"
+     placeholder="نسخة (اختياري) — ابحث وضيف" dir="ltr">
+    <div class="rcpt-dd"></div></div></div>
   <div class="cmp-row"><span class="cmp-lbl">الموضوع</span>
    <input name="subject" value="{{ subject }}" placeholder="الموضوع"></div>
   {% if fwd_atts %}<div class="cmp-row"><span class="cmp-lbl"></span>
@@ -7303,6 +7307,48 @@ MAIL_COMPOSE_TPL = """
  </div>
  <div class="cmp-body" id="cmpEditor" contenteditable="true" dir="auto"></div>
  <textarea id="rawBody" hidden>{{ body }}</textarea>
+<script>
+/* بحث في كل الإيميلات لخانة «إلى» و«Cc»: بالاسم أو الإيميل أو رقم الإقامة، والإضافة واحد ورا التاني */
+(function(){
+ var C = {{ (contacts or [])|tojson }};
+ function norm(s){ return (s||'').toString().toLowerCase(); }
+ function esc(s){ return (s||'').toString().replace(/[&<>"]/g,function(c){
+   return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+ document.querySelectorAll('input.rcpt').forEach(function(inp){
+   var dd = inp.parentNode.querySelector('.rcpt-dd');
+   function token(){ var v=inp.value, i=v.lastIndexOf(',');
+     return {pre: i>=0 ? v.slice(0,i+1) : '', q: (i>=0 ? v.slice(i+1) : v).trim()}; }
+   function have(){ return inp.value.split(',').map(function(x){return norm(x).trim();}); }
+   function render(){
+     var t=token(), q=norm(t.q), got=have();
+     var list=C.filter(function(p){
+       if(got.indexOf(norm(p.e))>-1) return false;
+       return !q || norm(p.n).indexOf(q)>-1 || norm(p.e).indexOf(q)>-1 ||
+              (p.q && norm(p.q).indexOf(q)>-1); }).slice(0,12);
+     dd.innerHTML='';
+     if(!list.length){ if(q){ dd.innerHTML='<div class="rcpt-none">مفيش نتايج</div>'; dd.style.display='block'; }
+                       else dd.style.display='none'; return; }
+     list.forEach(function(p){
+       var b=document.createElement('button'); b.type='button'; b.className='rcpt-item';
+       b.innerHTML='<i class="bi '+(p.t==='acc'?'bi-send-fill':'bi-person-fill')+'"></i> <b>'+esc(p.n||p.e)+
+         '</b> <span>'+esc(p.e)+'</span>'+(p.q?' <em>'+esc(p.q)+'</em>':'')+'<i class="rcpt-add">➕ إضافة</i>';
+       b.addEventListener('mousedown',function(e){ e.preventDefault(); });   // يفضل الفوكس في الخانة
+       b.onclick=function(){ var t=token();
+         inp.value=(t.pre ? t.pre.trim()+' ' : '')+p.e+', '; inp.focus(); render(); };
+       dd.appendChild(b);
+     });
+     dd.style.display='block';
+   }
+   inp.addEventListener('focus',render); inp.addEventListener('input',render);
+   inp.addEventListener('blur',function(){ setTimeout(function(){ dd.style.display='none'; },150); });
+   inp.addEventListener('keydown',function(e){
+     if(e.key==='Enter' && dd.style.display!=='none'){ var f=dd.querySelector('.rcpt-item');
+       if(f){ e.preventDefault(); f.click(); } }
+     if(e.key==='Escape') dd.style.display='none';
+   });
+ });
+})();
+</script>
 </form>
 <div class="sd-back" id="sdBack">
  <div class="sd-box" role="dialog" aria-modal="true">
@@ -7361,6 +7407,21 @@ MAIL_COMPOSE_TPL = """
  .cmp-row:last-child{border-bottom:none}
  .cmp-lbl{flex:0 0 64px;color:#334; font-size:.85rem;font-weight:700}
  .cmp-row input{flex:1;border:none;outline:none;padding:10px 4px;font-size:.92rem;background:transparent}
+ .rcpt-wrap{flex:1;position:relative;display:flex}
+ .rcpt-wrap input{width:100%}
+ .rcpt-dd{display:none;position:absolute;top:100%;inset-inline:0;z-index:60;background:#fff;
+   border:1px solid #cfd6e2;border-radius:10px;box-shadow:0 10px 28px rgba(20,40,80,.16);
+   max-height:320px;overflow:auto;padding:4px}
+ .rcpt-item{display:flex;align-items:center;gap:7px;width:100%;text-align:start;background:none;
+   border:none;border-radius:7px;padding:7px 9px;font-size:.86rem;cursor:pointer}
+ .rcpt-item:hover{background:#eaf3fc}
+ .rcpt-item b{font-weight:700;color:#1f2937}
+ .rcpt-item span{color:#6b7280;direction:ltr;unicode-bidi:embed;font-size:.8rem}
+ .rcpt-item em{color:#0a7d33;font-style:normal;font-size:.76rem}
+ .rcpt-item .bi{color:#0f6cbd}
+ .rcpt-add{margin-inline-start:auto;font-style:normal;font-size:.75rem;font-weight:800;color:#fff;
+   background:#0f6cbd;border-radius:20px;padding:1px 9px}
+ .rcpt-none{padding:8px 10px;color:#8a93a5;font-size:.84rem}
  .cmp-from{color:#242424;font-weight:600}
  .cmp-body{flex:1;border:none;outline:none;padding:20px 22px;font-size:.95rem;
    line-height:1.7;font-family:inherit;overflow-y:auto;white-space:pre-wrap}
@@ -12154,7 +12215,27 @@ def mail_compose(kind, oid):
 
     return render("mail_compose.html", heading, kind=kind, oid=oid, meta=meta, folder=folder,
                   mode=mode, uid=uid, heading=heading, to=to, cc=cc, subject=subject,
-                  body=body, back=back, fwd_atts=fwd_atts, reply_date=reply_date)
+                  body=body, back=back, fwd_atts=fwd_atts, reply_date=reply_date,
+                  contacts=_compose_contacts())
+
+
+def _compose_contacts():
+    """دليل الإيميلات لخانة «إلى/Cc»: الحسابات الرئيسية + الموظفين النشطين.
+    رقم الإقامة للبحث يتبعت للمدير بس (خصوصية)."""
+    u = current_user()
+    is_admin = bool(u and u["role"] == "admin")
+    conn = get_connection()
+    try:
+        out = [{"n": a["display_name"] or "", "e": a["email"], "q": "", "t": "acc"}
+               for a in conn.execute("SELECT display_name, email FROM accounts "
+                                     "WHERE active=1 ORDER BY id").fetchall()]
+        for e in conn.execute("SELECT name, email, iqama FROM employees WHERE active=1 "
+                              "ORDER BY name").fetchall():
+            out.append({"n": e["name"] or "", "e": e["email"],
+                        "q": (e["iqama"] or "") if is_admin else "", "t": "emp"})
+    finally:
+        conn.close()
+    return out
 
 
 @app.route("/api/mailbox-counts/<kind>/<int:oid>")
