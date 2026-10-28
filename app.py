@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.77"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.78"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3771,6 +3771,29 @@ INDEX_TPL = """
 {% extends "base.html" %}{% block content %}
 <div class="page-head"><div><h1>لوحة التحكم</h1>
  <div class="sub">نظرة عامة على النظام</div></div></div>
+<style>
+ .dash-sc{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:16px}
+ @media(max-width:900px){.dash-sc{grid-template-columns:1fr}}
+ .dash-sc a{display:flex;align-items:center;gap:16px;text-decoration:none;color:#1f2937;
+   background:#fff;border:1px solid #e3e8f0;border-inline-start:6px solid var(--c);
+   border-radius:14px;padding:20px 22px;box-shadow:0 2px 10px rgba(20,40,80,.06);
+   transition:transform .12s, box-shadow .12s}
+ .dash-sc a:hover{transform:translateY(-2px);box-shadow:0 8px 22px rgba(20,40,80,.12)}
+ .dash-sc .ic{flex:none;width:62px;height:62px;border-radius:14px;display:flex;align-items:center;
+   justify-content:center;font-size:1.9rem;color:#fff;background:var(--c)}
+ .dash-sc .t{font-size:1.25rem;font-weight:800;line-height:1.3}
+ .dash-sc .s{font-size:.85rem;color:#6b7280;margin-top:2px}
+ .dash-sc .go{margin-inline-start:auto;font-size:1.3rem;color:var(--c)}
+</style>
+<div class="dash-sc">
+ {% for s in shortcuts %}
+ <a href="{{ s.href }}" style="--c:{{ s.color }}">
+  <span class="ic"><i class="bi {{ s.icon }}"></i></span>
+  <span><span class="t d-block">{{ s.label }}</span><span class="s d-block">{{ s.sub }}</span></span>
+  <i class="bi bi-arrow-left-circle-fill go"></i>
+ </a>
+ {% endfor %}
+</div>
 <div class="d-flex align-items-center gap-2 mb-2">
  <span class="small text-muted"><i class="bi bi-arrow-repeat"></i> تحديث تلقائي كل ٥ ثوانٍ</span>
  <span class="small text-success" id="dashLiveFlag"></span>
@@ -8970,6 +8993,7 @@ def index():
                "ORDER BY id DESC LIMIT 10").fetchall()
     total_msgs = q("SELECT COUNT(*) c FROM mail_messages").fetchone()["c"]
     total_reps = q("SELECT COUNT(*) c FROM emp_replies WHERE status='sent'").fetchone()["c"]
+    tpl_ct = q("SELECT COUNT(*) c FROM templates WHERE COALESCE(archived,0)=0").fetchone()["c"]
     db_info = {"engine": "PostgreSQL" if USE_PG else "SQLite",
                "messages": total_msgs, "replies": total_reps}
     if USE_PG:
@@ -9002,6 +9026,16 @@ def index():
         health = {"db": dict(_health["db"]), "smtp": dict(_health["smtp"]),
                   "imap": dict(_health["imap"]), "last_check": _health["last_check"],
                   "fixes": list(_health["fixes"][:5])}
+    # اختصارات كبيرة في أعلى اللوحة: أكتر 3 صفحات بتستخدمها
+    shortcuts = [
+        {"label": "الحسابات المرسِلة", "sub": "%d حساب رئيسي" % total_acc,
+         "icon": "bi-send-fill", "color": "#0f6cbd", "href": url_for("accounts")},
+        {"label": "الموظفون", "sub": "%d موظف" % total_emp,
+         "icon": "bi-people-fill", "color": "#16a34a", "href": url_for("employees")},
+        {"label": "القوالب والردود التلقائية", "sub": "%d قالب" % tpl_ct,
+         "icon": "bi-file-earmark-text-fill", "color": "#b26a00",
+         "href": url_for("message_templates_page")},
+    ]
     cards = [
         {"label": "الموظفين", "value": total_emp, "icon": "bi-people", "color": "#667eea",
          "href": url_for("employees")},
@@ -9017,7 +9051,7 @@ def index():
          "color": "#805ad5", "href": url_for("distribution")},
     ]
     return render("index.html", "لوحة التحكم", cards=cards, recent=recent, db_info=db_info,
-                  health=health, emp_alerts=emp_alerts)
+                  health=health, emp_alerts=emp_alerts, shortcuts=shortcuts)
 
 
 # ------------------------------------------------------------------ النسخ الاحتياطي
