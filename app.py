@@ -65,7 +65,7 @@ import hashlib
 import secrets
 from flask import (
     Flask, request, redirect, url_for, flash, abort,
-    render_template, Response, session, send_file,
+    render_template, Response, session, send_file, jsonify,
 )
 from jinja2 import DictLoader, ChoiceLoader
 
@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.81"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.82"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3646,6 +3646,18 @@ BASE_TPL = """
  <nav class="sidebar-nav">
   {% if user and user.role == 'admin' %}
    <a class="{{ 'active' if ep=='index' }}" href="{{ url_for('index') }}"><i class="bi bi-grid-1x2-fill"></i> لوحة التحكم</a>
+   <script>/* القائمة مقفولة بكلمة سر لحد ما تتفتح في نفس التاب (تتقفل لما التاب يتقفل) */
+    try{ if(sessionStorage.getItem('navUnlocked')==='1') document.documentElement.classList.add('nav-open'); }catch(e){}
+   </script>
+   <div class="nav-lockbox">
+    <button type="button" class="nav-lock-btn" onclick="navAskPw()"><i class="bi bi-lock-fill"></i> فتح القائمة</button>
+    <form class="nav-pw" id="navPwForm" onsubmit="return navUnlock(event)">
+     <input type="password" id="navPw" placeholder="كلمة السر" autocomplete="off">
+     <button type="submit"><i class="bi bi-unlock-fill"></i></button>
+     <div class="nav-pw-err" id="navPwErr">كلمة السر غلط</div>
+    </form>
+   </div>
+   <div class="nav-locked">
    <div class="grp">الإرسال</div>
    <a class="{{ 'active' if ep=='accounts' }}" href="{{ url_for('accounts') }}"><i class="bi bi-send-fill"></i> الحسابات المرسِلة</a>
    <a class="{{ 'active' if ep=='employees' }}" href="{{ url_for('employees') }}"><i class="bi bi-people-fill"></i> الموظفون</a>
@@ -3664,6 +3676,8 @@ BASE_TPL = """
    <a class="{{ 'active' if ep=='users_page' }}" href="{{ url_for('users_page') }}"><i class="bi bi-shield-lock-fill"></i> المستخدمون</a>
    <a class="{{ 'active' if ep in ('backups_page',) }}" href="{{ url_for('backups_page') }}"><i class="bi bi-hdd-stack-fill"></i> النسخ الاحتياطي</a>
    <a class="{{ 'active' if ep=='server_page' }}" href="{{ url_for('server_page') }}"><i class="bi bi-hdd-network-fill"></i> السيرفر والنشر</a>
+   <a href="#" class="nav-relock" onclick="navLock();return false;"><i class="bi bi-lock"></i> قفل القائمة</a>
+   </div>
   {% elif user %}
    <a class="{{ 'active' if ep in ('me','mail_view','mail_message_view','mail_compose') }}" href="{{ url_for('me') }}"><i class="bi bi-inbox-fill"></i> بريدي</a>
    <a class="{{ 'active' if ep=='me_settings' }}" href="{{ url_for('me_settings') }}"><i class="bi bi-gear-fill"></i> إعداداتي</a>
@@ -3671,13 +3685,49 @@ BASE_TPL = """
  </nav>
  {% if user %}
  <div class="sidebar-foot">
-  <div class="who"><i class="bi bi-person-circle"></i> {{ user.full_name or user.username }}
+  <div class="who{{ ' nav-locked' if user.role == 'admin' }}"><i class="bi bi-person-circle"></i> {{ user.full_name or user.username }}
    · {{ 'مدير' if user.role=='admin' else 'موظف' }}</div>
   <a href="{{ url_for('logout') }}" class="btn btn-sm btn-light w-100">
    <i class="bi bi-box-arrow-right"></i> تسجيل الخروج</a>
  </div>
  {% endif %}
 </aside>
+<style>
+ .nav-locked{display:none}
+ html:not(.nav-open) .sidebar-foot .who.nav-locked{display:none !important}
+ html.nav-open .nav-locked{display:block}
+ html.nav-open .nav-lockbox{display:none}
+ .nav-lockbox{margin:10px 6px}
+ .nav-lock-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:7px;
+   background:rgba(255,255,255,.14);border:1px dashed rgba(255,255,255,.55);color:#fff;
+   border-radius:10px;padding:9px;font-weight:800;font-size:.9rem;cursor:pointer}
+ .nav-lock-btn:hover{background:rgba(255,255,255,.24)}
+ .nav-pw{display:none;margin-top:8px;gap:6px;flex-wrap:wrap}
+ .nav-pw.show{display:flex}
+ .nav-pw input{flex:1;min-width:0;border:none;border-radius:8px;padding:7px 10px;font-size:.9rem;
+   text-align:center;letter-spacing:2px}
+ .nav-pw button{border:none;border-radius:8px;padding:0 12px;background:#fcb938;color:#14176c;
+   font-weight:800}
+ .nav-pw-err{display:none;width:100%;color:#ffd0d0;font-size:.78rem;text-align:center}
+ .nav-relock{opacity:.75;font-size:.85rem}
+</style>
+<script>
+ function navAskPw(){ var f=document.getElementById('navPwForm'); f.classList.add('show');
+   document.getElementById('navPwErr').style.display='none'; document.getElementById('navPw').focus(); }
+ function navUnlock(ev){ ev.preventDefault(); var inp=document.getElementById('navPw');
+   fetch('{{ url_for('nav_unlock') }}',{method:'POST',
+     headers:{'Content-Type':'application/x-www-form-urlencoded'},
+     body:'password='+encodeURIComponent(inp.value)})
+    .then(function(r){return r.json()})
+    .then(function(j){ if(j.ok){ try{sessionStorage.setItem('navUnlocked','1')}catch(e){}
+        document.documentElement.classList.add('nav-open'); inp.value=''; }
+      else { document.getElementById('navPwErr').style.display='block'; inp.select(); } })
+    .catch(function(){ document.getElementById('navPwErr').style.display='block'; });
+   return false; }
+ function navLock(){ try{sessionStorage.removeItem('navUnlocked')}catch(e){}
+   document.documentElement.classList.remove('nav-open');
+   var f=document.getElementById('navPwForm'); if(f) f.classList.remove('show'); }
+</script>
 <div class="app-backdrop" id="bd" onclick="sbToggle()"></div>
 {% endif %}
 <div class="app-shell{{ ' full' if clean }}">
@@ -10350,6 +10400,16 @@ def distribution_clear():
     conn.close()
     flash("تم إلغاء كل التوزيع", "info")
     return redirect(url_for("distribution"))
+
+
+@app.route("/nav-unlock", methods=["POST"])
+def nav_unlock():
+    """فتح القائمة الجانبية بكلمة سر (الافتراضية 022001 — قابلة للتغيير من إعداد nav_lock_password).
+    الفحص هنا على السيرفر عشان كلمة السر ما تتكتبش جوه الصفحة."""
+    import hmac
+    given = (request.form.get("password", "") or "").strip()
+    expected = (get_setting("nav_lock_password", "") or "022001").strip()
+    return jsonify({"ok": hmac.compare_digest(given.encode(), expected.encode())})
 
 
 @app.route("/accounts/<int:aid>/toggle-broadcast")
