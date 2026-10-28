@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.76"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.77"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3771,16 +3771,6 @@ INDEX_TPL = """
 {% extends "base.html" %}{% block content %}
 <div class="page-head"><div><h1>لوحة التحكم</h1>
  <div class="sub">نظرة عامة على النظام</div></div></div>
-<div class="d-flex gap-2 flex-wrap mb-3">
- <a class="btn btn-primary" href="{{ url_for('quick_send') }}">
-  <i class="bi bi-lightning-charge-fill"></i> إرسال سريع</a>
- <a class="btn btn-outline-primary" href="{{ url_for('campaigns') }}">
-  <i class="bi bi-megaphone-fill"></i> الحملات</a>
- <a class="btn btn-outline-success" href="{{ url_for('employees') }}">
-  <i class="bi bi-person-plus-fill"></i> الموظفون</a>
- <form method="post" action="{{ url_for('backup_now') }}" class="d-inline">
-  <button class="btn btn-outline-secondary"><i class="bi bi-hdd-stack-fill"></i> نسخة احتياطية الآن</button></form>
-</div>
 <div class="d-flex align-items-center gap-2 mb-2">
  <span class="small text-muted"><i class="bi bi-arrow-repeat"></i> تحديث تلقائي كل ٥ ثوانٍ</span>
  <span class="small text-success" id="dashLiveFlag"></span>
