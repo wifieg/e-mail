@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.78"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.79"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3754,9 +3754,20 @@ BASE_TPL = """
      <button class="btn-close" data-bs-dismiss="alert"></button></div>
    {% endfor %}
   {% endwith %}
+  {% if user and user.role == 'admin' and not clean and ep != 'index' %}
+  <a class="back-dash" href="{{ url_for('index') }}" title="الرجوع للوحة التحكم">
+   <i class="bi bi-arrow-right-circle-fill"></i> رجوع للوحة التحكم</a>
+  {% endif %}
   {% block content %}{% endblock %}
  </div>
 </div>
+<style>
+ .back-dash{display:inline-flex;align-items:center;gap:7px;margin-bottom:12px;padding:7px 16px;
+   border-radius:10px;background:#eef2ff;border:1px solid #c7d2fe;color:#4338ca;font-weight:800;
+   font-size:.9rem;text-decoration:none;box-shadow:0 1px 4px rgba(67,56,202,.08)}
+ .back-dash i{font-size:1.15rem}
+ .back-dash:hover{background:#e0e7ff;color:#3730a3}
+</style>
 <div class="app-version" title="إصدار البرنامج">v{{ app_version }}</div>
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
 <script>
