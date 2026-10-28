@@ -107,7 +107,7 @@ INT_MAIL_ENABLED = os.environ.get("EM_INT_MAIL", "1") == "1"
 SCHEDULER_TICK = 15          # ثوانٍ بين فحوصات المُجدوِل
 INBOX_FETCH_LIMIT = 50       # أقصى عدد رسائل جديدة تُجلب لكل حساب في المرة
 SCHEMA_VERSION = 8
-APP_VERSION = "1.1.80"       # رقم إصدار البرنامج — يزيد مع كل تحديث
+APP_VERSION = "1.1.81"       # رقم إصدار البرنامج — يزيد مع كل تحديث
 DEFAULT_MAILBOX_PASS = "022001"   # كلمة مرور افتراضية لأي صندوق يُنشأ بدون واحدة
 DEFAULT_ADMIN_USER = "admin"
 DEFAULT_ADMIN_PASS = "admin"
@@ -3951,9 +3951,8 @@ ACCOUNTS_TPL = """
 <div id="accLive">
 <div class="table-wrap">
 <table class="table align-middle">
- <thead><tr><th>البريد</th><th>الاسم الظاهر</th><th>الاتصال</th><th>SMTP</th><th>IMAP</th>
-   <th>التشفير</th><th>أُرسل (ساعة/يوم)</th><th>الموظفين</th>
-   <th>مُرسَلة</th><th>مُستقبَلة</th><th>نشط</th><th>إجراءات</th></tr></thead>
+ <thead><tr><th>البريد</th><th>الاسم الظاهر</th><th>الاتصال</th>
+   <th>أُرسل (ساعة/يوم)</th><th>الموظفين</th><th>نشط</th><th>إجراءات</th></tr></thead>
  <tbody>
  {% for a in rows %}
  <tr>
@@ -3961,17 +3960,12 @@ ACCOUNTS_TPL = """
   <td>{{ a.display_name or '—' }}</td>
   <td><span class="status-dot {{ 'on' if a.verify_ok else 'off' }}">
       {{ 'متصل' if a.verify_ok else 'غير متصل' }}</span></td>
-  <td class="small text-muted">{{ a.smtp_server }}:{{ a.smtp_port }}</td>
-  <td class="small text-muted">{{ a.imap_server }}:{{ a.imap_port }}</td>
-  <td><span class="badge bg-secondary">{{ a.security }}</span></td>
   <td><span class="badge bg-info">{{ a.used_hour }}</span> /
       <span class="badge bg-secondary">{{ a.used_day }}</span></td>
   <td>
    <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
      data-bs-target="#empof{{ a.id }}">{{ a.employees|length }} موظف</button>
   </td>
-  <td><span class="badge bg-success" title="رسائل أرسلها الحساب">{{ a.sent_ct }}</span></td>
-  <td><span class="badge bg-info text-dark" title="ردود/رسائل وصلت للحساب">{{ a.recv_ct }}</span></td>
   <td>{% if a.active %}<i class="bi bi-check-circle-fill" style="color:var(--ok)"></i>
       {% else %}<i class="bi bi-slash-circle" style="color:#c4c9d2"></i>{% endif %}</td>
   <td class="text-nowrap">
@@ -3979,15 +3973,13 @@ ACCOUNTS_TPL = """
     <i class="bi bi-envelope-open"></i> فتح البريد</a>
    <button type="button" class="btn btn-sm btn-outline-primary" data-bs-toggle="modal"
      data-bs-target="#edacc{{ a.id }}">تعديل</button>
-   <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('test_account_route', aid=a.id) }}">اختبار</a>
-   <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('sync_account', aid=a.id) }}">تحديث</a>
    <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('toggle_account', aid=a.id) }}">
     {{ 'إيقاف' if a.active else 'تفعيل' }}</a>
    <a class="btn btn-sm btn-danger" href="{{ url_for('delete_account', aid=a.id) }}"
       onclick="return confirm('حذف الحساب؟')"><i class="bi bi-trash"></i></a>
   </td>
  </tr>
- {% else %}<tr><td colspan="12" class="mlist-empty">لا توجد حسابات — أضف حساباتك الخمسة</td></tr>{% endfor %}
+ {% else %}<tr><td colspan="7" class="mlist-empty">لا توجد حسابات — أضف حساباتك الخمسة</td></tr>{% endfor %}
  </tbody>
 </table>
 </div>
